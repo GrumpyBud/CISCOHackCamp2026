@@ -1,0 +1,14 @@
+#pragma once
+
+#define FIRMWARE_VERSION "1.0.0"
+#define DEBUG_SERIAL 1
+#define ENABLE_BUZZER 1
+#define ENABLE_WIFI_DASHBOARD 0
+#define USE_TOUCH_INPUT 1
+#define USE_JOYSTICK_INPUT 1
+
+#if DEBUG_SERIAL
+  #define DEBUGF(...) Serial.printf(__VA_ARGS__)
+#else
+  #define DEBUGF(...)
+#endif
