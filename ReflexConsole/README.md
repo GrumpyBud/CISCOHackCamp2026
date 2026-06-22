@@ -34,7 +34,7 @@ Open `ReflexConsole.ino` in Arduino IDE, select your ESP32 board, and upload.
 | TFT SCLK / MOSI / CS | 18 / 23 / 19 |
 | TFT DC / RST / backlight | 26 / 25 / 5 |
 | LED | 22 |
-| Buzzer | 9 |
+| Buzzer (external, TP9) | 13 |
 | Joystick X / Y | 34 / 35 |
 | Select / Back / Start / Menu touch | 12 / 14 / 27 / 33 |
 
