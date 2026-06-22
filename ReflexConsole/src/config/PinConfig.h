@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 // CUHSP 2021 badge defaults. All badge GPIO is 3.3 V logic.
 namespace Pins {

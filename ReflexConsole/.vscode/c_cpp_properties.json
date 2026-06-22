@@ -1,0 +1,31 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "ESP32",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/src",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp-x32/2601/xtensa-esp-elf/include/c++/14.2.0",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp-x32/2601/xtensa-esp-elf/include/c++/14.2.0/xtensa-esp-elf/esp32",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp-x32/2601/lib/gcc/xtensa-esp-elf/14.2.0/include",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp-x32/2601/xtensa-esp-elf/include",
+        "${env:HOME}/.arduino15/packages/esp32/hardware/esp32/3.3.10/cores/esp32",
+        "${env:HOME}/.arduino15/packages/esp32/hardware/esp32/3.3.10/variants/esp32",
+        "${env:HOME}/.arduino15/packages/esp32/hardware/esp32/3.3.10/libraries/**",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp32-libs/3.3.10/include/**",
+        "${env:HOME}/.arduino15/packages/esp32/tools/esp32-libs/3.3.10/dio_qspi/include",
+        "${env:HOME}/Arduino/libraries/TFT_eSPI"
+      ],
+      "defines": [
+        "ARDUINO=10819",
+        "ARDUINO_ARCH_ESP32",
+        "ESP32",
+        "CONFIG_IDF_TARGET_ESP32=1"
+      ],
+      "cppStandard": "c++17",
+      "compilerPath": "${env:HOME}/.arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32-elf-g++",
+      "intelliSenseMode": "linux-gcc-arm64"
+    }
+  ]
+}

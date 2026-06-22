@@ -54,7 +54,7 @@ Modes:
 - **Choice Test:** blue = Back/left; red = Select/right.
 - **Rhythm Test:** tap along with 24 beats.
 
-The first five Quick Tests create a personal baseline. After that, readiness reflects reaction speed, consistency, lapses, and false starts relative to that baseline. It is a personal trend—not a diagnosis or comparison with other people.
+The first five Quick Tests create a personal baseline. After that, readiness reflects reaction speed, consistency, lapses, and false starts relative to that baseline. It is a personal trend, not a diagnosis or comparison with other people.
 
 Settings persist in ESP32 Preferences. Use Settings to change sound, LED, test duration, trial count, lapse threshold, or reset saved data.
 
