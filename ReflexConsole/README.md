@@ -65,10 +65,32 @@ Settings and statistics are stored in the ESP32's non-volatile Preferences names
 - **Best quick** is the fastest non-zero median reaction time from a completed Quick Test. Focus, Choice, and Rhythm sessions do not change it.
 - **Baseline median** and **Baseline spread** are the moving Quick Test baseline used for readiness. A session with no valid response is recorded in the session count, but cannot overwrite the best or baseline with a zero.
 - **Sessions** counts every completed test.
+- **Detailed history** retains the newest 100 completed sessions. It is separate from the existing aggregate storage, so updating from older firmware preserves aggregate stats while starting detailed history empty. **Reset stats** clears both local aggregates and local detailed history; **Reset baseline** does not clear session history.
 
-The boot-screen version is the `FIRMWARE_VERSION` value in `src/config/BuildConfig.h`. It is intentionally manual: update it for each release (for example, `1.1.0` to `1.1.1` for a bug-fix release), then rebuild and flash.
+The boot-screen version is the `FIRMWARE_VERSION` value in `src/config/BuildConfig.h`. It is intentionally manual: update it for each release (for example, `1.2.0` to `1.3.0` for a feature release), then rebuild and flash.
 
 Use Settings to change sound, LED, test duration, trial count, lapse threshold, or reset saved data.
+
+## Dashboard and export
+
+The `dashboard/` directory is a Vercel Next.js app using Clerk and Neon. In Clerk, enable **email** and **Google** sign-in. Copy `dashboard/.env.example` to `.env.local`, set the Clerk and Neon values, run `dashboard/db/schema.sql` against the database, then install and start it:
+
+```sh
+cd dashboard
+npm install
+npm run dev
+```
+
+The dashboard is private to the signed-in Clerk user. On desktop Chrome or Edge over HTTPS, choose **Bluetooth import** and connect to the badge over BLE. The badge advertises a Reflex BLE service and only exports after receiving the explicit `REFLEX_EXPORT_V1` command. It sends `REFLEX_EXPORT `-prefixed newline-delimited JSON begin, session, and end frames; normal debug output is ignored by import tools. USB serial import is still available as a fallback for the Python exporter.
+
+For any browser, create the same uploadable JSON file with Python:
+
+```sh
+python3 -m pip install pyserial
+python3 dashboard/tools/export_badge.py --port /dev/ttyUSB0 --output reflex-export.json
+```
+
+Replace `/dev/ttyUSB0` with the badge's serial port (for example `COM3` on Windows). Imports are idempotent by signed-in user, badge ID, and session number. Deleting cloud history only deletes this account's cloud data; it never changes the badge.
 
 ## Troubleshooting
 

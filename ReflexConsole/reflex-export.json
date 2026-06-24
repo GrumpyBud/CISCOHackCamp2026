@@ -1,0 +1,36 @@
+{
+  "format": "reflex-console-export",
+  "protocol": 1,
+  "begin": {
+    "type": "begin",
+    "protocol": 1,
+    "firmware_version": "1.2.0",
+    "badge_id": "1CCB0CCD31E8",
+    "history_capacity": 100,
+    "session_sequence_start": 1,
+    "session_sequence_end": 1,
+    "session_count": 1
+  },
+  "sessions": [
+    {
+      "type": "session",
+      "sequence": 1,
+      "test_type": "quick",
+      "score": 100,
+      "median": 207,
+      "spread": 4.77,
+      "lapses": 0,
+      "false_starts": 1,
+      "attempts": 4,
+      "correct": 4,
+      "rhythm_bias": 0
+    }
+  ],
+  "end": {
+    "type": "end",
+    "protocol": 1,
+    "session_count": 1,
+    "session_sequence_start": 1,
+    "session_sequence_end": 1
+  }
+}\n
