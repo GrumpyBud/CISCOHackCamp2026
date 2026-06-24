@@ -62,7 +62,7 @@ class BleCommandCallbacks final : public BLECharacteristicCallbacks {
   explicit BleCommandCallbacks(ReflexApp& app) : app(app) {}
 
   void onWrite(BLECharacteristic* characteristic) override {
-    const std::string value = characteristic->getValue();
+    String value = characteristic->getValue();
     if (value == "REFLEX_EXPORT_V1" || value == "REFLEX_EXPORT_V1\n" || value == "REFLEX_EXPORT_V1\r\n") {
       app.requestBleExport();
     }
