@@ -28,7 +28,7 @@ void Display::metric(const char* label, const char* value, int16_t y, uint16_t c
   tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   tft.drawString(label, 5, y);
   tft.setTextColor(color, TFT_BLACK);
-  tft.drawRightString(value, 123, y);
+  tft.drawRightString(value, 123, y, 1);
 }
 
 void Display::progress(uint8_t current, uint8_t total) {
