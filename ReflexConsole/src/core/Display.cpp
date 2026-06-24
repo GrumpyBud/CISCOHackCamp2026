@@ -18,6 +18,7 @@ void Display::header(const char* title, uint16_t color) {
 
 void Display::centered(const char* text, int16_t y, uint8_t size, uint16_t color) {
   tft.setTextSize(size);
+  if (size > 1 && tft.textWidth(text) > 128) tft.setTextSize(1);
   tft.setTextColor(color, TFT_BLACK);
   const int16_t x = (128 - tft.textWidth(text)) / 2;
   tft.drawString(text, x < 0 ? 0 : x, y);
