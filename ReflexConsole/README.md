@@ -53,15 +53,24 @@ Modes:
 - **Quick Test:** simple reaction time; detects false starts and lapses.
 - **Focus Test:** repeated reaction events over 30, 60, or 120 seconds.
 - **Choice Test:** blue = Back/left; red = Select/right.
-- **Rhythm Test:** tap along with 24 beats.
+- **Rhythm Test:** tap along with 24 flashes, 600 ms apart. Each tap is matched to its nearest flash; only the first tap matched to a flash counts. Timing error is the median absolute distance from a matched flash.
 
 The first five Quick Tests create a personal baseline. After that, readiness reflects reaction speed, consistency, lapses, and false starts relative to that baseline. It is a personal trend, not a diagnosis or comparison with other people.
 
-Settings persist in ESP32 Preferences. Use Settings to change sound, LED, test duration, trial count, lapse threshold, or reset saved data.
+## Stats, storage, and versioning
+
+Settings and statistics are stored in the ESP32's non-volatile Preferences namespace (`reflex`) after every completed session. They survive reset and ordinary firmware uploads; erase-flash operations and **Reset stats** remove them.
+
+- **Last score** is the score from the most recently completed session, regardless of test mode.
+- **Best quick** is the fastest non-zero median reaction time from a completed Quick Test. Focus, Choice, and Rhythm sessions do not change it.
+- **Baseline median** and **Baseline spread** are the moving Quick Test baseline used for readiness. A session with no valid response is recorded in the session count, but cannot overwrite the best or baseline with a zero.
+- **Sessions** counts every completed test.
+
+The boot-screen version is the `FIRMWARE_VERSION` value in `src/config/BuildConfig.h`. It is intentionally manual: update it for each release (for example, `1.1.0` to `1.1.1` for a bug-fix release), then rebuild and flash.
+
+Use Settings to change sound, LED, test duration, trial count, lapse threshold, or reset saved data.
 
 ## Troubleshooting
 
 - Blank or incorrect display: check the TFT_eSPI setup above.
-- Joystick drift: keep it centered during boot; adjust the dead zone in `InputManager.cpp` if necessary.
-- Touch unreliable: adjust the threshold in `InputManager.cpp`.
-- No buzzer: set `ENABLE_BUZZER` to `0` in `BuildConfig.h` if no buzzer is fitted.
+- Touch unreliable: adjust `TOUCH_THRESHOLD` in `InputManager.cpp` for the specific badge.
