@@ -2,7 +2,7 @@
 
 void Display::begin() {
   tft.init();
-  tft.setRotation(0);
+  tft.setRotation(2);
   clear();
 }
 
