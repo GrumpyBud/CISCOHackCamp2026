@@ -40,7 +40,7 @@ Implements the product behavior:
 - Quick, Focus, Choice, and Rhythm test state transitions;
 - input handling for each state;
 - menu/settings screens and test summaries;
-- LED and buzzer feedback;
+- built-in LED feedback;
 - saving completed test results.
 
 Start here when changing test flow, adding a menu item, or changing displayed copy. Tests are timed with `millis()` and should stay non-blocking.
@@ -52,13 +52,13 @@ Start here when changing test flow, adding a menu item, or changing displayed co
 Compile-time feature flags and firmware version:
 
 - `DEBUG_SERIAL` enables serial diagnostics.
-- `ENABLE_BUZZER` enables GPIO13/TP9 tone output.
+- `ENABLE_BUZZER` enables optional external GPIO13/TP9 tone output.
 - `ENABLE_WIFI_DASHBOARD` is reserved and disabled.
-- `USE_TOUCH_INPUT` and `USE_JOYSTICK_INPUT` select available controls.
+- `USE_TOUCH_INPUT` enables the built-in capacitive controls.
 
 ### `src/config/PinConfig.h`
 
-One source of truth for board GPIO assignments. The badge schematic confirms the TFT, LED, touch, and joystick values. The optional buzzer is **GPIO13 / TP9**; do not change it to GPIO9, which is a flash signal.
+One source of truth for board GPIO assignments. The tester uses the badge's built-in TFT, LED, and all eight capacitive touch pads, so it needs no external input wiring.
 
 ## Core modules
 
@@ -68,9 +68,9 @@ Defines the `AppState` enum used by the central state machine and the abstract `
 
 ### `src/core/InputManager.h` and `src/core/InputManager.cpp`
 
-Reads joystick and touch inputs and turns them into one-shot events (`UP`, `DOWN`, `SELECT`, and so on). It handles startup joystick calibration, touch edge detection, joystick dead zone, and repeat suppression.
+Reads all eight built-in capacitive pads and turns them into one-shot events (`UP`, `DOWN`, `SELECT`, and so on). It handles touch edge detection.
 
-Adjust `TOUCH_THRESHOLD`, `JOYSTICK_DEADZONE`, or `JOYSTICK_REPEAT_MS` in the `.cpp` file when a specific badge needs tuning.
+Adjust `TOUCH_THRESHOLD` in the `.cpp` file when a specific badge needs tuning.
 
 ### `src/core/Display.h` and `src/core/Display.cpp`
 

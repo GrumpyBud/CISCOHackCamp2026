@@ -33,17 +33,18 @@ Open `ReflexConsole.ino` in Arduino IDE, select your ESP32 board, and upload.
 |---|---:|
 | TFT SCLK / MOSI / CS | 18 / 23 / 19 |
 | TFT DC / RST / backlight | 26 / 25 / 5 |
-| LED | 22 |
-| Buzzer (external, TP9) | 13 |
-| Joystick X / Y | 34 / 35 |
+| LED | 22 (built in) |
+| Up / Down / Left / Right touch | 2 / 15 / 4 / 13 |
 | Select / Back / Start / Menu touch | 12 / 14 / 27 / 33 |
 
-All pins are 3.3 V only. Adjust pins and feature flags in `src/config/` if needed.
+The tester uses only the badge's built-in display, LED, and capacitive pads; it needs no joystick, buzzer, or other wiring. All GPIO is 3.3 V only.
+
+Touch-pad mapping follows an Xbox-style layout: S2 = Up, S3 = Down, S0 = Left, S4 = Right; S5 = A/Select, S6 = B/Back, S8 = X/Menu, and S7 = Y/Start.
 
 ## Use
 
-- Joystick up/down navigates menus.
-- Select or Start activates an item and responds in reaction tests.
+- Touch Up/Down navigates menus; Left/Right changes a setting.
+- Touch Select or Start activates an item and responds in reaction tests.
 - Back returns to the menu; it is also the left response in Choice Test.
 - Menu always returns to the main menu.
 
