@@ -88,8 +88,9 @@ The dashboard is private to the signed-in Clerk user. On desktop Chrome or Edge 
 The dashboard now works as a broader brain-health console:
 
 - Badge performance history with score, reaction time, consistency, lapse, false-start, accuracy, and rhythm trends.
-- A daily health context log for sleep, stress, mood, exercise, caffeine, hydration, and notes.
+- Daily health context logs for sleep, stress, mood, exercise, caffeine, hydration, and notes, with multiple check-ins per day supported. Check-in time and context are based on the user's system clock, and total caffeine is floored by the day's logged recent-caffeine entries while still allowing a higher manual total.
 - Readiness and cognitive-strain estimates that combine recent session data with the latest health context.
+- A transparent readiness model showing expected-vs-observed score, uncertainty range, data-quality flags, response speed, and component contributions for speed, consistency, lapse control, accuracy, memory, and context.
 - Early import-day correlation checks between health context and performance scores.
 - An adaptive visual memory trainer and a generated daily training plan.
 - CSV export with session metrics plus matched import-day health context.

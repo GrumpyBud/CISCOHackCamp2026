@@ -29,19 +29,47 @@ const BLE_DATA_UUID = "8f4f0003-b0bc-4cf0-a4f2-49e0e6a8c101";
 
 const nice = (value: number | undefined, suffix = "") => value === undefined ? "—" : `${Math.round(value)}${suffix}`;
 const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
+const standardDeviation = (values: number[]) => {
+  const mean = average(values);
+  return mean === undefined || values.length < 2 ? undefined : Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1));
+};
+const weightedAverage = (items: { value: number | undefined; weight: number }[]) => {
+  const valid = items.filter((item): item is { value: number; weight: number } => item.value !== undefined);
+  const totalWeight = valid.reduce((sum, item) => sum + item.weight, 0);
+  return totalWeight ? valid.reduce((sum, item) => sum + item.value * item.weight, 0) / totalWeight : undefined;
+};
 const labels: Record<TestType, string> = { quick: "Quick", focus: "Focus", choice: "Choice", rhythm: "Rhythm", memory: "Memory" };
 const tableLabels: Record<SortKey, string> = { sequence: "sequence", test_type: "test", score: "score", median: "median", spread: "spread", lapses: "lapses", false_starts: "false starts", attempts: "attempts", correct: "correct", rhythm_bias: "bias/span" };
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-const today = () => new Date().toISOString().slice(0, 10);
+const pad = (value: number) => String(value).padStart(2, "0");
+const today = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+const currentTime = () => {
+  const now = new Date();
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+};
+const automaticContext = () => {
+  const hour = new Date().getHours();
+  if (hour < 5 || hour >= 21) return "bedtime";
+  if (hour < 12) return "morning";
+  if (hour < 17) return "afternoon";
+  return "evening";
+};
 const dateKey = (value: string) => value.slice(0, 10);
 const blankHealthLog = (): HealthLog => ({
   log_date: today(),
+  log_time: currentTime(),
+  context: automaticContext(),
+  wake_time: "07:00",
   sleep_hours: 7.5,
   sleep_quality: 7,
   stress: 4,
   mood: 7,
   exercise_minutes: 20,
   caffeine_mg: 120,
+  caffeine_recent_mg: 0,
   hydration: 7,
   notes: "",
 });
@@ -138,6 +166,10 @@ function CorrelationRow({ label, value, detail }: { label: string; value: number
   return <article><strong>{label}</strong><span>{value === undefined ? "—" : value.toFixed(2)}</span><p>{strength}. {detail}</p></article>;
 }
 
+function ModelFactor({ label, value, detail }: { label: string; value: number | undefined; detail: string }) {
+  return <article><div><strong>{label}</strong><span>{nice(value)}</span></div><meter min="0" max="100" value={value ?? 0} /><p>{detail}</p></article>;
+}
+
 export function Dashboard() {
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
   const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
@@ -169,8 +201,6 @@ export function Dashboard() {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not load health logs");
     setHealthLogs(body.logs);
-    const current = (body.logs as HealthLog[]).find((log) => log.log_date === today());
-    if (current) setHealthForm(current);
   }, []);
   useEffect(() => { loadHealth().catch((error: Error) => setHealthMessage(error.message)); }, [loadHealth]);
 
@@ -306,7 +336,7 @@ export function Dashboard() {
   const updateHealthField = (field: keyof HealthLog, value: string) => {
     setHealthForm((current) => ({
       ...current,
-      [field]: field === "notes" || field === "log_date" ? value : Number(value),
+      [field]: field === "notes" || field === "log_date" || field === "log_time" || field === "context" || field === "wake_time" ? value : Number(value),
     }));
   };
 
@@ -314,11 +344,13 @@ export function Dashboard() {
     event.preventDefault();
     setHealthMessage("Saving health context…");
     try {
-      const response = await fetch("/api/health", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(healthForm) });
+      const payload = { ...healthForm, log_date: today(), log_time: currentTime(), context: automaticContext(), caffeine_mg: caffeineTotal };
+      const response = await fetch("/api/health", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Could not save health log");
       await loadHealth();
-      setHealthMessage(`Saved context for ${body.log.log_date}.`);
+      setHealthForm((current) => ({ ...current, log_date: today(), log_time: currentTime(), context: automaticContext(), notes: "" }));
+      setHealthMessage(`Added ${body.log.context} context for ${body.log.log_date} at ${body.log.log_time}.`);
     } catch (error) {
       setHealthMessage(error instanceof Error ? error.message : "Could not save health log");
     }
@@ -365,30 +397,74 @@ export function Dashboard() {
   }), [sessions, sort]);
   const points = sessions.slice().sort((a, b) => a.sequence - b.sequence);
   const toggleSort = (key: SortKey) => setSort((current) => ({ key, ascending: current.key === key ? !current.ascending : true }));
+  const caffeineLoggedToday = useMemo(() => healthLogs
+    .filter((log) => log.log_date === today())
+    .reduce((sum, log) => sum + log.caffeine_recent_mg, 0), [healthLogs]);
+  const caffeineMinimum = clamp(caffeineLoggedToday + healthForm.caffeine_recent_mg, 0, 1200);
+  const caffeineTotal = Math.max(healthForm.caffeine_mg, caffeineMinimum);
 
   const brainHealth = useMemo(() => {
     const ordered = sessions.slice().sort((a, b) => a.sequence - b.sequence);
     const recent = ordered.slice(-6);
     const previous = ordered.slice(-18, -6);
-    const latestHealth = healthLogs.slice().sort((a, b) => b.log_date.localeCompare(a.log_date))[0];
+    const reference = ordered.slice(0, Math.max(0, ordered.length - recent.length)).slice(-20);
+    const latestHealth = healthLogs.slice().sort((a, b) => `${b.log_date} ${b.log_time}`.localeCompare(`${a.log_date} ${a.log_time}`))[0];
     const recentScore = average(recent.map((item) => item.score));
     const previousScore = average(previous.map((item) => item.score));
     const accuracy = average(recent.filter((item) => item.attempts > 0).map((item) => item.correct / item.attempts * 100));
     const lapsePressure = average(recent.map((item) => item.lapses + item.false_starts)) ?? 0;
     const consistency = average(recent.map((item) => item.spread));
+    const recentMedian = average(recent.filter((item) => item.median > 0).map((item) => item.median));
+    const referenceMedian = average((reference.length ? reference : ordered).filter((item) => item.median > 0).map((item) => item.median));
+    const referenceSpread = average((reference.length ? reference : ordered).map((item) => item.spread));
+    const recentCv = recentMedian ? (consistency ?? 0) / recentMedian : undefined;
+    const responseSpeed = recentMedian ? 1000 / recentMedian : undefined;
     const sleepAdjustment = latestHealth ? clamp((latestHealth.sleep_hours - 7) * 3 + (latestHealth.sleep_quality - 6) * 1.5, -12, 10) : 0;
     const stressAdjustment = latestHealth ? clamp((5 - latestHealth.stress) * 2, -12, 8) : 0;
     const movementAdjustment = latestHealth ? clamp(latestHealth.exercise_minutes / 15, 0, 6) : 0;
-    const readiness = clamp((recentScore ?? 0) - lapsePressure * 3 - (consistency ?? 0) / 28 + sleepAdjustment + stressAdjustment + movementAdjustment, 0, 100);
+    const recentCaffeinePenalty = latestHealth ? clamp(latestHealth.caffeine_recent_mg / 75, 0, 8) : 0;
+    const speedComponent = recentMedian && referenceMedian ? clamp(82 + ((referenceMedian - recentMedian) / referenceMedian) * 120, 0, 100) : recentScore;
+    const consistencyComponent = consistency !== undefined && referenceSpread !== undefined ? clamp(82 + ((referenceSpread - consistency) / Math.max(referenceSpread, 1)) * 80, 0, 100) : undefined;
+    const lapseComponent = clamp(100 - lapsePressure * 18, 0, 100);
+    const accuracyComponent = accuracy;
+    const memoryItems = recent.filter((item) => item.test_type === "memory");
+    const memoryComponent = memoryItems.length ? average(memoryItems.map((item) => item.score)) : undefined;
+    const contextComponent = latestHealth ? clamp(72 + sleepAdjustment + stressAdjustment + movementAdjustment - recentCaffeinePenalty + (latestHealth.hydration - 6) * 1.5, 0, 100) : undefined;
+    const readiness = clamp(weightedAverage([
+      { value: speedComponent, weight: .24 },
+      { value: consistencyComponent, weight: .18 },
+      { value: lapseComponent, weight: .17 },
+      { value: accuracyComponent, weight: .16 },
+      { value: memoryComponent, weight: .1 },
+      { value: contextComponent, weight: .15 },
+    ]) ?? 0, 0, 100);
     const strain = clamp(100 - readiness + lapsePressure * 4 + (latestHealth?.stress ?? 5) * 2, 0, 100);
     const trend = previousScore === undefined || recentScore === undefined ? undefined : recentScore - previousScore;
-    const healthByDate = new Map(healthLogs.map((log) => [log.log_date, log]));
+    const expectedScore = previousScore ?? average(reference.map((item) => item.score)) ?? recentScore;
+    const observedMinusExpected = recentScore !== undefined && expectedScore !== undefined ? recentScore - expectedScore : undefined;
+    const scoreSpread = standardDeviation(recent.map((item) => item.score)) ?? 14;
+    const uncertainty = clamp(18 - Math.sqrt(ordered.length) * 1.4 + scoreSpread / 4 + (latestHealth ? 0 : 4), 6, 24);
+    const readinessRange = { low: clamp(readiness - uncertainty, 0, 100), high: clamp(readiness + uncertainty, 0, 100) };
+    const confidence = ordered.length >= 20 && latestHealth ? "Higher" : ordered.length >= 8 ? "Moderate" : "Low";
+    const dailyHealth = new Map<string, HealthLog[]>();
+    for (const log of healthLogs) dailyHealth.set(log.log_date, [...(dailyHealth.get(log.log_date) ?? []), log]);
+    const healthByDate = new Map([...dailyHealth.entries()].map(([day, logs]) => [day, {
+      ...logs[0],
+      sleep_hours: average(logs.map((log) => log.sleep_hours)) ?? logs[0].sleep_hours,
+      sleep_quality: average(logs.map((log) => log.sleep_quality)) ?? logs[0].sleep_quality,
+      stress: average(logs.map((log) => log.stress)) ?? logs[0].stress,
+      mood: average(logs.map((log) => log.mood)) ?? logs[0].mood,
+      exercise_minutes: average(logs.map((log) => log.exercise_minutes)) ?? logs[0].exercise_minutes,
+      caffeine_mg: Math.max(...logs.map((log) => log.caffeine_mg), logs.reduce((sum, log) => sum + log.caffeine_recent_mg, 0)),
+      caffeine_recent_mg: average(logs.map((log) => log.caffeine_recent_mg)) ?? logs[0].caffeine_recent_mg,
+      hydration: average(logs.map((log) => log.hydration)) ?? logs[0].hydration,
+    }]));
     const paired = ordered.map((session) => ({ session, health: healthByDate.get(dateKey(session.imported_at)) })).filter((item): item is { session: DashboardSession; health: HealthLog } => Boolean(item.health));
     const correlations = {
       sleep: pearson(paired.map((item) => ({ x: item.health.sleep_hours, y: item.session.score }))),
       stress: pearson(paired.map((item) => ({ x: item.health.stress, y: item.session.score }))),
       exercise: pearson(paired.map((item) => ({ x: item.health.exercise_minutes, y: item.session.score }))),
-      caffeine: pearson(paired.map((item) => ({ x: item.health.caffeine_mg, y: item.session.score }))),
+      caffeine: pearson(paired.map((item) => ({ x: item.health.caffeine_recent_mg || item.health.caffeine_mg, y: item.session.score }))),
     };
     const weakestType = TEST_TYPES.map((type) => {
       const items = ordered.filter((item) => item.test_type === type);
@@ -402,9 +478,27 @@ export function Dashboard() {
     if (lapsePressure >= 2) insights.push("Lapses and false starts are elevated. Use shorter blocks and add a 60-second reset between tests.");
     if ((consistency ?? 0) > 180) insights.push("Timing spread is high, which usually points to consistency rather than raw speed. Rhythm and focus drills should be prioritized.");
     if (latestHealth && latestHealth.sleep_hours < 6.5) insights.push("Sleep logged below 6.5 hours. Treat today's cognitive scores as recovery-sensitive.");
+    if (latestHealth && latestHealth.caffeine_recent_mg > 250) insights.push("Recent caffeine is high. Compare today against similar caffeine timing before treating a score change as readiness.");
     if (!latestHealth) insights.push("Add today's sleep, stress, movement, caffeine, and hydration to make readiness more useful.");
     if (weakestType && weakestType.score < 75) insights.push(`${labels[weakestType.type]} is the current lowest-scoring mode. The training plan should start there.`);
-    return { recentScore, previousScore, accuracy, consistency, readiness, strain, trend, latestHealth, pairedCount: paired.length, correlations, weakestType, insights: insights.slice(0, 5) };
+    const dataQualityFlags = [];
+    if (ordered.length < 8) dataQualityFlags.push("Low session count");
+    if (!reference.length) dataQualityFlags.push("No prior baseline window");
+    if (!latestHealth) dataQualityFlags.push("No recent health check-in");
+    if (!memoryItems.length) dataQualityFlags.push("No recent memory session");
+    if ((recentCv ?? 0) > .6) dataQualityFlags.push("High timing variability");
+    return {
+      recentScore, previousScore, accuracy, consistency, readiness, strain, trend, latestHealth, pairedCount: paired.length, correlations, weakestType, insights: insights.slice(0, 5),
+      expectedScore, observedMinusExpected, readinessRange, confidence, responseSpeed, recentCv, dataQualityFlags,
+      components: [
+        { label: "Speed", value: speedComponent, detail: recentMedian ? `${Math.round(recentMedian)} ms recent median` : "Needs valid reaction sessions" },
+        { label: "Consistency", value: consistencyComponent, detail: recentCv !== undefined ? `RT CV ${recentCv.toFixed(2)}` : "Needs timing spread" },
+        { label: "Lapse control", value: lapseComponent, detail: `${lapsePressure.toFixed(1)} lapses/false starts per recent session` },
+        { label: "Accuracy", value: accuracyComponent, detail: "Correct responses on valid attempts" },
+        { label: "Memory", value: memoryComponent, detail: memoryItems.length ? "Recent memory session scores" : "Run Memory Test to include this factor" },
+        { label: "Context", value: contextComponent, detail: latestHealth ? `${latestHealth.context} check-in, recent caffeine ${latestHealth.caffeine_recent_mg} mg` : "Add a health check-in" },
+      ],
+    };
   }, [healthLogs, sessions]);
 
   return <div className="dashboard">
@@ -425,9 +519,15 @@ export function Dashboard() {
 
     <section className="metrics brain-metrics">
       <MetricCard label="Brain readiness" value={nice(brainHealth.readiness)} detail="Score, consistency, lapses, and latest health context" />
-      <MetricCard label="Cognitive strain" value={nice(brainHealth.strain)} detail="Higher means recovery or lighter training may help" />
+      <MetricCard label="Expected delta" value={brainHealth.observedMinusExpected === undefined ? "—" : `${brainHealth.observedMinusExpected > 0 ? "+" : ""}${Math.round(brainHealth.observedMinusExpected)}`} detail={`Expected recent score ${nice(brainHealth.expectedScore)}`} />
       <MetricCard label="Recent accuracy" value={nice(brainHealth.accuracy, "%")} detail="Correct responses across recent valid attempts" />
-      <MetricCard label="Health overlap" value={String(brainHealth.pairedCount)} detail="Sessions sharing an import-day health log" />
+      <MetricCard label="Confidence" value={brainHealth.confidence} detail={`Readiness range ${nice(brainHealth.readinessRange.low)}-${nice(brainHealth.readinessRange.high)}`} />
+    </section>
+
+    <section className="model-panel">
+      <div className="section-heading"><div><h2>Readiness model</h2><p>Transparent within-person baseline, inspired by PVT-style speed, variability, lapse, and context features.</p></div><span>{brainHealth.dataQualityFlags.length ? brainHealth.dataQualityFlags.join(" / ") : "No quality flags"}</span></div>
+      <div className="model-grid">{brainHealth.components.map((component) => <ModelFactor key={component.label} {...component} />)}</div>
+      <div className="model-footnotes"><span>Response speed {brainHealth.responseSpeed === undefined ? "—" : `${brainHealth.responseSpeed.toFixed(2)}/s`}</span><span>Health overlap {brainHealth.pairedCount}</span><span>Cognitive strain {nice(brainHealth.strain)}</span></div>
     </section>
 
     <section className="workspace-grid">
@@ -451,15 +551,17 @@ export function Dashboard() {
 
     <section className="health-grid">
       <form className="health-form" onSubmit={saveHealthLog}>
-        <div className="section-heading"><div><h2>Daily health context</h2><p>One entry per day; later saves update the same date.</p></div><button type="submit">Save context</button></div>
+        <div className="section-heading"><div><h2>Daily health context</h2><p>Check-ins use your system date and time; context is labeled automatically.</p></div><button type="submit">Add context</button></div>
+        <div className="auto-context"><span>{today()}</span><span>{currentTime()}</span><span>{automaticContext()}</span></div>
         <div className="form-grid">
-          <label>Date<input type="date" value={healthForm.log_date} onChange={(event) => updateHealthField("log_date", event.target.value)} /></label>
+          <label>Wake time<input type="time" value={healthForm.wake_time} onChange={(event) => updateHealthField("wake_time", event.target.value)} /></label>
           <label>Sleep hours<input type="number" min="0" max="16" step=".1" value={healthForm.sleep_hours} onChange={(event) => updateHealthField("sleep_hours", event.target.value)} /></label>
           <label>Sleep quality<input type="range" min="1" max="10" value={healthForm.sleep_quality} onChange={(event) => updateHealthField("sleep_quality", event.target.value)} /><span>{healthForm.sleep_quality}/10</span></label>
           <label>Stress<input type="range" min="1" max="10" value={healthForm.stress} onChange={(event) => updateHealthField("stress", event.target.value)} /><span>{healthForm.stress}/10</span></label>
           <label>Mood<input type="range" min="1" max="10" value={healthForm.mood} onChange={(event) => updateHealthField("mood", event.target.value)} /><span>{healthForm.mood}/10</span></label>
           <label>Exercise minutes<input type="number" min="0" max="600" value={healthForm.exercise_minutes} onChange={(event) => updateHealthField("exercise_minutes", event.target.value)} /></label>
-          <label>Caffeine mg<input type="number" min="0" max="1200" value={healthForm.caffeine_mg} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /></label>
+          <label>Total caffeine mg<input type="number" min={caffeineMinimum} max="1200" value={caffeineTotal} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /><span>Minimum from today's logs: {caffeineMinimum} mg</span></label>
+          <label>Recent caffeine mg<input type="number" min="0" max="1200" value={healthForm.caffeine_recent_mg} onChange={(event) => updateHealthField("caffeine_recent_mg", event.target.value)} /></label>
           <label>Hydration<input type="range" min="1" max="10" value={healthForm.hydration} onChange={(event) => updateHealthField("hydration", event.target.value)} /><span>{healthForm.hydration}/10</span></label>
         </div>
         <label className="notes-field">Notes<textarea value={healthForm.notes} onChange={(event) => updateHealthField("notes", event.target.value)} placeholder="Medication changes, illness, travel, unusual fatigue, training notes" /></label>

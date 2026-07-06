@@ -50,12 +50,16 @@ export type DashboardSession = ExportSession & {
 export type HealthLog = {
   id?: number;
   log_date: string;
+  log_time: string;
+  context: string;
+  wake_time: string;
   sleep_hours: number;
   sleep_quality: number;
   stress: number;
   mood: number;
   exercise_minutes: number;
   caffeine_mg: number;
+  caffeine_recent_mg: number;
   hydration: number;
   notes: string;
   created_at?: string;
