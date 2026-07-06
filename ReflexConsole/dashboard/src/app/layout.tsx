@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Reflex Console",
-  description: "Private personal performance trend analysis",
+  description: "Private brain health training and performance trend analysis",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

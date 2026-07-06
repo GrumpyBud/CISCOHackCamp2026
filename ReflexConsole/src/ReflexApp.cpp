@@ -13,8 +13,9 @@
 #include <BLEServer.h>
 #endif
 
-static const char* const MENU[] = {"Quick Test", "Focus Test", "Choice Test", "Rhythm Test", "Stats", "Settings"};
+static const char* const MENU[] = {"Quick Test", "Focus Test", "Choice Test", "Rhythm Test", "Memory Test", "Stats", "Settings"};
 static const char* const SETTING[] = {"Sound", "LED", "Test length", "Quick trials", "Lapse threshold", "Reset stats", "Reset baseline", "About"};
+static const char* const MEMORY_DIRS[] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
 #if ENABLE_BLE_DASHBOARD
 namespace {
@@ -94,6 +95,14 @@ void ReflexApp::led(bool on) { digitalWrite(Pins::LED, (storage.settings.led && 
 
 bool ReflexApp::action(InputEvent e) const { return e == InputEvent::SELECT || e == InputEvent::START; }
 
+int8_t ReflexApp::memoryDirection(InputEvent e) const {
+  if (e == InputEvent::UP) return 0;
+  if (e == InputEvent::DOWN) return 1;
+  if (e == InputEvent::LEFT) return 2;
+  if (e == InputEvent::RIGHT) return 3;
+  return -1;
+}
+
 void ReflexApp::change(AppState s) {
   state = s;
   stateAt = millis();
@@ -117,6 +126,46 @@ void ReflexApp::startQuick(uint32_t now) {
   newWait(now, 1500, 5000);
   change(AppState::QUICK_WAIT);
   DEBUGF("Quick start %u trials\n", storage.settings.quickTrials);
+}
+
+void ReflexApp::startMemory(uint32_t now) {
+  sampleCount = lapses = falseStarts = 0;
+  memoryLength = 3;
+  memoryRound = memoryCorrectRounds = memoryCorrectSteps = memoryTargetSteps = memoryMistakes = memoryBestSpan = 0;
+  startMemoryRound(now);
+  DEBUGF("Memory start\n");
+}
+
+void ReflexApp::startMemoryRound(uint32_t now) {
+  if (memoryLength > 9) memoryLength = 9;
+  if (memoryLength < 3) memoryLength = 3;
+  for (uint8_t i = 0; i < memoryLength; i++) memorySequence[i] = random(0, 4);
+  memoryShowStep = 0;
+  memoryInputStep = 0;
+  memoryTargetSteps += memoryLength;
+  if (memoryLength > memoryBestSpan) memoryBestSpan = memoryLength;
+  stimulusAt = now;
+  nextAt = now + 450;
+  change(AppState::MEMORY_SHOW);
+}
+
+void ReflexApp::finishMemory() {
+  SessionResult r;
+  r.attempts = memoryTargetSteps;
+  r.correct = memoryCorrectSteps;
+  r.falseStarts = memoryMistakes;
+  r.lapses = lapses;
+  r.median = sampleCount ? MathUtils::median(samples, sampleCount) : 0;
+  r.spread = sampleCount ? MathUtils::stddev(samples, sampleCount, MathUtils::mean(samples, sampleCount)) : 0;
+  r.bias = memoryBestSpan;
+  const float accuracy = r.attempts ? 100.f * r.correct / r.attempts : 0;
+  const float spanBonus = memoryBestSpan > 3 ? (memoryBestSpan - 3) * 5.f : 0;
+  r.score = MathUtils::clampScore(accuracy * .72f + spanBonus);
+  stats.recordMemory(r);
+  storage.save(stats);
+  storage.recordSession(TestKind::MEMORY, r);
+  change(AppState::MEMORY_SUMMARY);
+  DEBUGF("Memory end span=%u score=%u correct=%u/%u\n", memoryBestSpan, r.score, r.correct, r.attempts);
 }
 
 void ReflexApp::testFeedback(const char* t, uint16_t c, uint32_t now) {
@@ -225,6 +274,21 @@ void ReflexApp::update() {
       if (storage.settings.sound) buzzer.beep(880, 35);
     }
   }
+  if (state == AppState::MEMORY_SHOW && now >= nextAt) {
+    if (memoryShowStep < memoryLength) {
+      stimulusAt = now;
+      led(true);
+      if (storage.settings.sound) buzzer.beep(700 + memorySequence[memoryShowStep] * 130, 40);
+      memoryShowStep++;
+      nextAt = now + 650;
+      dirty = true;
+    } else {
+      led(false);
+      stimulusAt = now;
+      nextAt = now + 5000;
+      change(AppState::MEMORY_INPUT);
+    }
+  }
   InputEvent e = input.update(now);
   if (e == InputEvent::MENU && state != AppState::MENU) {
     change(AppState::MENU);
@@ -267,7 +331,22 @@ void ReflexApp::update() {
       change(AppState::QUICK_WAIT);
     }
   }
+  if (state == AppState::MEMORY_INPUT && now >= nextAt) {
+    lapses++;
+    memoryMistakes++;
+    snprintf(feedback, sizeof(feedback), "TIMEOUT");
+    feedbackColor = TFT_YELLOW;
+    memoryRound++;
+    if (memoryLength > 3) memoryLength--;
+    nextAt = now + 850;
+    change(AppState::MEMORY_FEEDBACK);
+  }
+  if (state == AppState::MEMORY_FEEDBACK && now >= nextAt) {
+    if (memoryRound >= 5) finishMemory();
+    else startMemoryRound(now);
+  }
   if (state == AppState::RHYTHM_RUNNING && now - stimulusAt > 70) led(false);
+  if (state == AppState::MEMORY_SHOW && now - stimulusAt > 240) led(false);
   if (dirty) {
     draw();
     dirty = false;
@@ -281,10 +360,10 @@ void ReflexApp::handle(InputEvent e, uint32_t now) {
     return;
   }
   if (state == AppState::MENU) {
-    if (e == InputEvent::UP) menuIndex = (menuIndex + 5) % 6;
-    else if (e == InputEvent::DOWN) menuIndex = (menuIndex + 1) % 6;
+    if (e == InputEvent::UP) menuIndex = (menuIndex + 6) % 7;
+    else if (e == InputEvent::DOWN) menuIndex = (menuIndex + 1) % 7;
     else if (action(e)) {
-      static const AppState targets[] = {AppState::QUICK_INTRO, AppState::FOCUS_INTRO, AppState::CHOICE_INTRO, AppState::RHYTHM_INTRO, AppState::STATS, AppState::SETTINGS};
+      static const AppState targets[] = {AppState::QUICK_INTRO, AppState::FOCUS_INTRO, AppState::CHOICE_INTRO, AppState::RHYTHM_INTRO, AppState::MEMORY_INTRO, AppState::STATS, AppState::SETTINGS};
       change(targets[menuIndex]);
     }
     dirty = true;
@@ -314,6 +393,7 @@ void ReflexApp::handle(InputEvent e, uint32_t now) {
     change(AppState::RHYTHM_RUNNING);
     return;
   }
+  if (state == AppState::MEMORY_INTRO && action(e)) { startMemory(now); return; }
   if (state == AppState::QUICK_WAIT || state == AppState::FOCUS_WAIT || state == AppState::CHOICE_WAIT) {
     if (action(e) || e == InputEvent::LEFT || e == InputEvent::RIGHT) {
       falseStarts++;
@@ -378,6 +458,38 @@ void ReflexApp::handle(InputEvent e, uint32_t now) {
     dirty = false;
     return;
   }
+  if (state == AppState::MEMORY_INPUT) {
+    const int8_t direction = memoryDirection(e);
+    if (direction < 0) return;
+    const uint16_t latency = (uint16_t)(now - stimulusAt);
+    stimulusAt = now;
+    if (direction == memorySequence[memoryInputStep]) {
+      if (sampleCount < 30) samples[sampleCount++] = latency;
+      memoryCorrectSteps++;
+      memoryInputStep++;
+      nextAt = now + 5000;
+      if (memoryInputStep >= memoryLength) {
+        memoryCorrectRounds++;
+        snprintf(feedback, sizeof(feedback), "MATCH");
+        feedbackColor = TFT_GREEN;
+        memoryRound++;
+        if (memoryLength < 9) memoryLength++;
+        nextAt = now + 850;
+        change(AppState::MEMORY_FEEDBACK);
+      } else {
+        dirty = true;
+      }
+    } else {
+      memoryMistakes++;
+      snprintf(feedback, sizeof(feedback), "MISSED %s", MEMORY_DIRS[memoryInputStep < memoryLength ? memorySequence[memoryInputStep] : 0]);
+      feedbackColor = TFT_RED;
+      memoryRound++;
+      if (memoryLength > 3) memoryLength--;
+      nextAt = now + 950;
+      change(AppState::MEMORY_FEEDBACK);
+    }
+    return;
+  }
   if (state == AppState::SETTINGS) {
     if (e == InputEvent::UP) settingIndex = (settingIndex + 7) % 8;
     else if (e == InputEvent::DOWN) settingIndex = (settingIndex + 1) % 8;
@@ -403,14 +515,14 @@ void ReflexApp::draw() {
   display.clear();
   if (state == AppState::BOOT) {
     display.centered("Reflex Console", 32, 2, TFT_CYAN);
-    display.centered("Personal performance", 62, 1);
-    display.centered("tracker", 73, 1);
+    display.centered("Brain health", 62, 1);
+    display.centered("trainer", 73, 1);
     snprintf(b, sizeof(b), "v%s %s", FIRMWARE_VERSION, __DATE__);
     display.centered(b, 108, 1, TFT_DARKGREY);
     return;
   }
   if (state == AppState::MENU) {
-    display.menu(MENU, 6, menuIndex);
+    display.menu(MENU, 7, menuIndex);
     return;
   }
   if (state == AppState::STATS) {
@@ -421,11 +533,14 @@ void ReflexApp::draw() {
     display.metric("Best quick", b, 38, TFT_GREEN);
     snprintf(b, sizeof(b), "%.0f ms", stats.baseline.quickMedian);
     display.metric("Base median", b, 54);
-    snprintf(b, sizeof(b), "%.0f ms", stats.baseline.quickSpread);
-    display.metric("Base spread", b, 70);
+    snprintf(b, sizeof(b), "%u", stats.memoryBest);
+    display.metric("Best memory", b, 70, TFT_GREEN);
     snprintf(b, sizeof(b), "%lu", (unsigned long)stats.sessions);
     display.metric("Sessions", b, 86);
-    display.centered("BACK: menu", 112, 1, TFT_DARKGREY);
+    if (stats.last.score < 55) display.centered("Coach: train light", 102, 1, TFT_YELLOW);
+    else if (stats.last.lapses || stats.last.falseStarts) display.centered("Coach: reset pace", 102, 1, TFT_YELLOW);
+    else display.centered("Coach: steady", 102, 1, TFT_GREEN);
+    display.centered("BACK: menu", 116, 1, TFT_DARKGREY);
     return;
   }
   if (state == AppState::SETTINGS) {
@@ -459,12 +574,12 @@ void ReflexApp::draw() {
     return;
   }
 
-  bool intro = state == AppState::QUICK_INTRO || state == AppState::FOCUS_INTRO || state == AppState::CHOICE_INTRO || state == AppState::RHYTHM_INTRO;
+  bool intro = state == AppState::QUICK_INTRO || state == AppState::FOCUS_INTRO || state == AppState::CHOICE_INTRO || state == AppState::RHYTHM_INTRO || state == AppState::MEMORY_INTRO;
   if (intro) {
-    const char* title = state == AppState::QUICK_INTRO ? "QUICK TEST" : state == AppState::FOCUS_INTRO ? "FOCUS TEST" : state == AppState::CHOICE_INTRO ? "CHOICE TEST" : "RHYTHM TEST";
+    const char* title = state == AppState::QUICK_INTRO ? "QUICK TEST" : state == AppState::FOCUS_INTRO ? "FOCUS TEST" : state == AppState::CHOICE_INTRO ? "CHOICE TEST" : state == AppState::RHYTHM_INTRO ? "RHYTHM TEST" : "MEMORY TEST";
     display.header(title);
-    const char* a = state == AppState::QUICK_INTRO ? "Wait for GREEN." : state == AppState::FOCUS_INTRO ? "Respond to each" : state == AppState::CHOICE_INTRO ? "BLUE = BACK" : "Tap with the beat";
-    const char* c = state == AppState::CHOICE_INTRO ? "RED = SELECT" : state == AppState::QUICK_INTRO ? "Tap when GREEN." : "Press START";
+    const char* a = state == AppState::QUICK_INTRO ? "Wait for GREEN." : state == AppState::FOCUS_INTRO ? "Respond to each" : state == AppState::CHOICE_INTRO ? "BLUE = BACK" : state == AppState::RHYTHM_INTRO ? "Tap with the beat" : "Watch directions";
+    const char* c = state == AppState::CHOICE_INTRO ? "RED = SELECT" : state == AppState::QUICK_INTRO ? "Tap when GREEN." : state == AppState::MEMORY_INTRO ? "Repeat on pads" : "Press START";
     display.centered(a, 42, 1);
     display.centered(c, 60, 1);
     display.centered("START to begin", 102, 1, TFT_CYAN);
@@ -495,6 +610,45 @@ void ReflexApp::draw() {
     display.centered("TAP", 40, 3, TFT_CYAN);
     snprintf(b, sizeof(b), "Beat %u / 24", trial);
     display.centered(b, 90, 1);
+    return;
+  }
+  if (state == AppState::MEMORY_SHOW) {
+    display.header("MEMORY");
+    if (memoryShowStep == 0) {
+      display.centered("GET READY", 48, 2, TFT_CYAN);
+    } else {
+      const uint8_t direction = memorySequence[memoryShowStep - 1];
+      display.centered(MEMORY_DIRS[direction], 43, 3, direction == 0 ? TFT_CYAN : direction == 1 ? TFT_GREEN : direction == 2 ? TFT_YELLOW : TFT_RED);
+    }
+    snprintf(b, sizeof(b), "Step %u / %u", memoryShowStep, memoryLength);
+    display.centered(b, 92, 1);
+    return;
+  }
+  if (state == AppState::MEMORY_INPUT) {
+    display.header("REPEAT");
+    snprintf(b, sizeof(b), "%u / %u", memoryInputStep, memoryLength);
+    display.centered(b, 35, 3, TFT_CYAN);
+    display.centered("Use direction pads", 76, 1);
+    display.progress(memoryInputStep, memoryLength);
+    return;
+  }
+  if (state == AppState::MEMORY_FEEDBACK) {
+    display.centered(feedback, 45, 2, feedbackColor);
+    snprintf(b, sizeof(b), "Round %u / 5", memoryRound);
+    display.centered(b, 78, 1);
+    return;
+  }
+  if (state == AppState::MEMORY_SUMMARY) {
+    display.header("MEMORY SUMMARY");
+    snprintf(b, sizeof(b), "%u/%u", stats.last.correct, stats.last.attempts);
+    display.metric("Recall", b, 24, TFT_CYAN);
+    snprintf(b, sizeof(b), "%u", stats.last.bias);
+    display.metric("Best span", b, 40, TFT_GREEN);
+    snprintf(b, sizeof(b), "%u", stats.last.falseStarts);
+    display.metric("Mistakes", b, 56, TFT_YELLOW);
+    snprintf(b, sizeof(b), "Score %u", stats.last.score);
+    display.centered(b, 88, 1, TFT_GREEN);
+    display.centered("BACK: menu", 113, 1, TFT_DARKGREY);
     return;
   }
   if (state == AppState::QUICK_SUMMARY || state == AppState::FOCUS_SUMMARY || state == AppState::CHOICE_SUMMARY || state == AppState::RHYTHM_SUMMARY) {

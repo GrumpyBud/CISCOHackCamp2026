@@ -1,6 +1,6 @@
 # Reflex Console
 
-An ESP32 handheld for quick reaction, attention, choice, and rhythm tests. It tracks your own baseline and shows a simple readiness estimate. It is a measurement tool, not an IQ test or medical device.
+An ESP32 handheld for quick reaction, attention, choice, rhythm, and memory tests. It tracks your own baseline and shows a simple readiness estimate. It is a measurement tool, not an IQ test or medical device.
 
 ## Requirements
 
@@ -54,6 +54,7 @@ Modes:
 - **Focus Test:** repeated reaction events over 30, 60, or 120 seconds.
 - **Choice Test:** blue = Back/left; red = Select/right.
 - **Rhythm Test:** tap along with 24 flashes, 600 ms apart. Each tap is matched to its nearest flash; only the first tap matched to a flash counts. Timing error is the median absolute distance from a matched flash.
+- **Memory Test:** watch a short Up/Down/Left/Right sequence and repeat it using the touch pads. The sequence adapts over five rounds, then logs recall accuracy, recall timing, mistakes, score, and best span.
 
 The first five Quick Tests create a personal baseline. After that, readiness reflects reaction speed, consistency, lapses, and false starts relative to that baseline. It is a personal trend, not a diagnosis or comparison with other people.
 
@@ -66,6 +67,7 @@ Settings and statistics are stored in the ESP32's non-volatile Preferences names
 - **Baseline median** and **Baseline spread** are the moving Quick Test baseline used for readiness. A session with no valid response is recorded in the session count, but cannot overwrite the best or baseline with a zero.
 - **Sessions** counts every completed test.
 - **Detailed history** retains the newest 100 completed sessions. It is separate from the existing aggregate storage, so updating from older firmware preserves aggregate stats while starting detailed history empty. **Reset stats** clears both local aggregates and local detailed history; **Reset baseline** does not clear session history.
+- **Memory best** is the highest on-device Memory Test span reached in a completed session.
 
 The boot-screen version is the `FIRMWARE_VERSION` value in `src/config/BuildConfig.h`. It is intentionally manual: update it for each release (for example, `1.2.0` to `1.3.0` for a feature release), then rebuild and flash.
 
@@ -73,7 +75,7 @@ Use Settings to change sound, LED, test duration, trial count, lapse threshold, 
 
 ## Dashboard and export
 
-The `dashboard/` directory is a Vercel Next.js app using Clerk and Neon. In Clerk, enable **email** and **Google** sign-in. Copy `dashboard/.env.example` to `.env.local`, set the Clerk and Neon values, run `dashboard/db/schema.sql` against the database, then install and start it:
+The `dashboard/` directory is a Vercel Next.js app using Clerk and Neon. In Clerk, enable **email** and **Google** sign-in. Copy `dashboard/.env.example` to `.env.local`, set the Clerk and Neon values, run `dashboard/db/schema.sql` against the database, then install and start it. Existing databases created before Memory Test support should also run `dashboard/db/migrations/002_memory_test_type.sql`.
 
 ```sh
 cd dashboard
@@ -83,6 +85,21 @@ npm run dev
 
 The dashboard is private to the signed-in Clerk user. On desktop Chrome or Edge over HTTPS, choose **Bluetooth import** and connect to the badge over BLE. The badge advertises a Reflex BLE service and only exports after receiving the explicit `REFLEX_EXPORT_V1` command. It sends `REFLEX_EXPORT `-prefixed newline-delimited JSON begin, session, and end frames; normal debug output is ignored by import tools. USB serial import is still available as a fallback for the Python exporter.
 
+The dashboard now works as a broader brain-health console:
+
+- Badge performance history with score, reaction time, consistency, lapse, false-start, accuracy, and rhythm trends.
+- A daily health context log for sleep, stress, mood, exercise, caffeine, hydration, and notes.
+- Readiness and cognitive-strain estimates that combine recent session data with the latest health context.
+- Early import-day correlation checks between health context and performance scores.
+- An adaptive visual memory trainer and a generated daily training plan.
+- CSV export with session metrics plus matched import-day health context.
+
+These features are for personal wellness and training. They are not medical diagnosis, treatment, or screening.
+
+Daily health context is intentionally website-only in this prototype. The badge has no keyboard, so on-device features should stay tap-controller friendly: tests, training, summaries, and local session history.
+
+In a final commercial-style product, the ESP32 trainer could sign into Wi-Fi and sync encrypted session data to a global processing service that returns heavier analytics back to the user account and possibly down to the trainer. That server would exist only to process and synchronize the user's brain-health training data. This repository is unlikely to fully implement that production Wi-Fi/cloud path; the practical implementation here is local badge logging plus dashboard import.
+
 For any browser, create the same uploadable JSON file with Python:
 
 ```sh
@@ -91,6 +108,8 @@ python3 dashboard/tools/export_badge.py --port /dev/ttyUSB0 --output reflex-expo
 ```
 
 Replace `/dev/ttyUSB0` with the badge's serial port (for example `COM3` on Windows). Imports are idempotent by signed-in user, badge ID, and session number. Deleting cloud history only deletes this account's cloud data; it never changes the badge.
+
+For future model and dataset work, use `docs/ai-research-agent-prompt.md` as the brief for a research agent.
 
 ## Troubleshooting
 

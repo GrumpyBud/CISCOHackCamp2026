@@ -43,8 +43,10 @@ void Display::menu(const char* const* items, uint8_t count, uint8_t selected) {
   header("REFLEX CONSOLE");
   tft.setTextSize(1);
 
+  const int rowHeight = count > 6 ? 15 : 17;
+  const int startY = count > 6 ? 18 : 20;
   for (uint8_t i = 0; i < count; ++i) {
-    const int y = 20 + i * 17;
+    const int y = startY + i * rowHeight;
     if (i == selected) {
       tft.fillRoundRect(3, y - 2, 122, 14, 3, TFT_CYAN);
       tft.setTextColor(TFT_BLACK, TFT_CYAN);

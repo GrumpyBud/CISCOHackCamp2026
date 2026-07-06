@@ -1,8 +1,8 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { exportFromFrames } from "@/lib/export";
-import { DashboardSession, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
+import { DashboardSession, HealthLog, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
 
 type SortKey = keyof Pick<DashboardSession, "sequence" | "test_type" | "score" | "median" | "spread" | "lapses" | "false_starts" | "attempts" | "correct" | "rhythm_bias">;
 type SerialReader = ReadableStreamDefaultReader<Uint8Array>;
@@ -29,7 +29,28 @@ const BLE_DATA_UUID = "8f4f0003-b0bc-4cf0-a4f2-49e0e6a8c101";
 
 const nice = (value: number | undefined, suffix = "") => value === undefined ? "—" : `${Math.round(value)}${suffix}`;
 const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
-const labels: Record<TestType, string> = { quick: "Quick", focus: "Focus", choice: "Choice", rhythm: "Rhythm" };
+const labels: Record<TestType, string> = { quick: "Quick", focus: "Focus", choice: "Choice", rhythm: "Rhythm", memory: "Memory" };
+const tableLabels: Record<SortKey, string> = { sequence: "sequence", test_type: "test", score: "score", median: "median", spread: "spread", lapses: "lapses", false_starts: "false starts", attempts: "attempts", correct: "correct", rhythm_bias: "bias/span" };
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const today = () => new Date().toISOString().slice(0, 10);
+const dateKey = (value: string) => value.slice(0, 10);
+const blankHealthLog = (): HealthLog => ({
+  log_date: today(),
+  sleep_hours: 7.5,
+  sleep_quality: 7,
+  stress: 4,
+  mood: 7,
+  exercise_minutes: 20,
+  caffeine_mg: 120,
+  hydration: 7,
+  notes: "",
+});
+const memoryTiles = [
+  { id: 0, label: "A", name: "amber" },
+  { id: 1, label: "B", name: "blue" },
+  { id: 2, label: "C", name: "green" },
+  { id: 3, label: "D", name: "rose" },
+] as const;
 
 function createExportAccumulator() {
   const decoder = new TextDecoder();
@@ -101,21 +122,81 @@ function LineChart({ title, values, color, suffix = "" }: { title: string; value
   </section>;
 }
 
+function pearson(pairs: { x: number; y: number }[]) {
+  if (pairs.length < 4) return undefined;
+  const xMean = average(pairs.map((point) => point.x)) ?? 0;
+  const yMean = average(pairs.map((point) => point.y)) ?? 0;
+  const numerator = pairs.reduce((sum, point) => sum + (point.x - xMean) * (point.y - yMean), 0);
+  const xVariance = pairs.reduce((sum, point) => sum + (point.x - xMean) ** 2, 0);
+  const yVariance = pairs.reduce((sum, point) => sum + (point.y - yMean) ** 2, 0);
+  const denominator = Math.sqrt(xVariance * yVariance);
+  return denominator ? numerator / denominator : undefined;
+}
+
+function CorrelationRow({ label, value, detail }: { label: string; value: number | undefined; detail: string }) {
+  const strength = value === undefined ? "Not enough overlap" : Math.abs(value) >= .45 ? "Strong signal" : Math.abs(value) >= .25 ? "Possible signal" : "Weak signal";
+  return <article><strong>{label}</strong><span>{value === undefined ? "—" : value.toFixed(2)}</span><p>{strength}. {detail}</p></article>;
+}
+
 export function Dashboard() {
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
+  const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
+  const [healthForm, setHealthForm] = useState<HealthLog>(() => blankHealthLog());
   const [testType, setTestType] = useState<"all" | TestType>("all");
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "sequence", ascending: false });
   const [message, setMessage] = useState("Loading sessions…");
+  const [healthMessage, setHealthMessage] = useState("");
   const [importing, setImporting] = useState(false);
+  const [memoryLevel, setMemoryLevel] = useState(3);
+  const [memorySequence, setMemorySequence] = useState<number[]>([]);
+  const [memoryInput, setMemoryInput] = useState<number[]>([]);
+  const [playIndex, setPlayIndex] = useState(-1);
+  const [isShowingSequence, setIsShowingSequence] = useState(false);
+  const [memoryStatus, setMemoryStatus] = useState("Start with a short visual sequence, then repeat it from memory.");
+  const [memoryStats, setMemoryStats] = useState({ attempts: 0, streak: 0, best: 0 });
 
-  const load = async (filter = testType) => {
+  const load = useCallback(async (filter = testType) => {
     const response = await fetch(`/api/sessions${filter === "all" ? "" : `?testType=${filter}`}`, { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not load sessions");
     setSessions(body.sessions);
     setMessage(body.sessions.length ? "" : "No cloud sessions yet. Import your badge history to begin.");
-  };
-  useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, [testType]);
+  }, [testType]);
+  useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, [load]);
+
+  const loadHealth = useCallback(async () => {
+    const response = await fetch("/api/health", { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load health logs");
+    setHealthLogs(body.logs);
+    const current = (body.logs as HealthLog[]).find((log) => log.log_date === today());
+    if (current) setHealthForm(current);
+  }, []);
+  useEffect(() => { loadHealth().catch((error: Error) => setHealthMessage(error.message)); }, [loadHealth]);
+
+  useEffect(() => {
+    if (!isShowingSequence || !memorySequence.length) return undefined;
+    setPlayIndex(0);
+    let finishTimer: number | undefined;
+    const interval = window.setInterval(() => {
+      setPlayIndex((current) => {
+        if (current >= memorySequence.length - 1) {
+          window.clearInterval(interval);
+          finishTimer = window.setTimeout(() => {
+            setPlayIndex(-1);
+            setIsShowingSequence(false);
+            setMemoryStatus("Repeat the sequence.");
+          }, 360);
+          return current;
+        }
+        return current + 1;
+      });
+    }, 650);
+    return () => {
+      window.clearInterval(interval);
+      if (finishTimer !== undefined) window.clearTimeout(finishTimer);
+    };
+  }, [isShowingSequence, memorySequence]);
 
   const importExport = async (payload: ReflexExport) => {
     setImporting(true); setMessage("Importing…");
@@ -222,6 +303,57 @@ export function Dashboard() {
     setSessions([]); setMessage("Cloud history deleted. Badge history is unchanged.");
   };
 
+  const updateHealthField = (field: keyof HealthLog, value: string) => {
+    setHealthForm((current) => ({
+      ...current,
+      [field]: field === "notes" || field === "log_date" ? value : Number(value),
+    }));
+  };
+
+  const saveHealthLog = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setHealthMessage("Saving health context…");
+    try {
+      const response = await fetch("/api/health", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(healthForm) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not save health log");
+      await loadHealth();
+      setHealthMessage(`Saved context for ${body.log.log_date}.`);
+    } catch (error) {
+      setHealthMessage(error instanceof Error ? error.message : "Could not save health log");
+    }
+  };
+
+  const startMemoryRound = () => {
+    const sequence = Array.from({ length: memoryLevel }, () => Math.floor(Math.random() * memoryTiles.length));
+    setMemorySequence(sequence);
+    setMemoryInput([]);
+    setIsShowingSequence(true);
+    setMemoryStatus(`Watch ${memoryLevel} steps.`);
+  };
+
+  const chooseMemoryTile = (tile: number) => {
+    if (isShowingSequence || !memorySequence.length) return;
+    const next = [...memoryInput, tile];
+    setMemoryInput(next);
+    const expected = memorySequence[next.length - 1];
+    if (tile !== expected) {
+      setMemoryStats((current) => ({ attempts: current.attempts + 1, streak: 0, best: Math.max(current.best, current.streak) }));
+      setMemoryLevel((current) => Math.max(3, current - 1));
+      setMemoryStatus(`Sequence missed at step ${next.length}. Slow down, breathe, and try again.`);
+      setMemorySequence([]);
+      setMemoryInput([]);
+      return;
+    }
+    if (next.length === memorySequence.length) {
+      setMemoryStats((current) => ({ attempts: current.attempts + 1, streak: current.streak + 1, best: Math.max(current.best, current.streak + 1) }));
+      setMemoryLevel((current) => Math.min(9, current + 1));
+      setMemoryStatus("Clean recall. Next round adapts up by one step.");
+      setMemorySequence([]);
+      setMemoryInput([]);
+    }
+  };
+
   const stats = useMemo(() => ({
     latest: sessions.slice().sort((a, b) => b.sequence - a.sequence)[0],
     quickBest: Math.min(...sessions.filter((item) => item.test_type === "quick" && item.median > 0).map((item) => item.median)),
@@ -234,14 +366,123 @@ export function Dashboard() {
   const points = sessions.slice().sort((a, b) => a.sequence - b.sequence);
   const toggleSort = (key: SortKey) => setSort((current) => ({ key, ascending: current.key === key ? !current.ascending : true }));
 
+  const brainHealth = useMemo(() => {
+    const ordered = sessions.slice().sort((a, b) => a.sequence - b.sequence);
+    const recent = ordered.slice(-6);
+    const previous = ordered.slice(-18, -6);
+    const latestHealth = healthLogs.slice().sort((a, b) => b.log_date.localeCompare(a.log_date))[0];
+    const recentScore = average(recent.map((item) => item.score));
+    const previousScore = average(previous.map((item) => item.score));
+    const accuracy = average(recent.filter((item) => item.attempts > 0).map((item) => item.correct / item.attempts * 100));
+    const lapsePressure = average(recent.map((item) => item.lapses + item.false_starts)) ?? 0;
+    const consistency = average(recent.map((item) => item.spread));
+    const sleepAdjustment = latestHealth ? clamp((latestHealth.sleep_hours - 7) * 3 + (latestHealth.sleep_quality - 6) * 1.5, -12, 10) : 0;
+    const stressAdjustment = latestHealth ? clamp((5 - latestHealth.stress) * 2, -12, 8) : 0;
+    const movementAdjustment = latestHealth ? clamp(latestHealth.exercise_minutes / 15, 0, 6) : 0;
+    const readiness = clamp((recentScore ?? 0) - lapsePressure * 3 - (consistency ?? 0) / 28 + sleepAdjustment + stressAdjustment + movementAdjustment, 0, 100);
+    const strain = clamp(100 - readiness + lapsePressure * 4 + (latestHealth?.stress ?? 5) * 2, 0, 100);
+    const trend = previousScore === undefined || recentScore === undefined ? undefined : recentScore - previousScore;
+    const healthByDate = new Map(healthLogs.map((log) => [log.log_date, log]));
+    const paired = ordered.map((session) => ({ session, health: healthByDate.get(dateKey(session.imported_at)) })).filter((item): item is { session: DashboardSession; health: HealthLog } => Boolean(item.health));
+    const correlations = {
+      sleep: pearson(paired.map((item) => ({ x: item.health.sleep_hours, y: item.session.score }))),
+      stress: pearson(paired.map((item) => ({ x: item.health.stress, y: item.session.score }))),
+      exercise: pearson(paired.map((item) => ({ x: item.health.exercise_minutes, y: item.session.score }))),
+      caffeine: pearson(paired.map((item) => ({ x: item.health.caffeine_mg, y: item.session.score }))),
+    };
+    const weakestType = TEST_TYPES.map((type) => {
+      const items = ordered.filter((item) => item.test_type === type);
+      return { type, score: average(items.slice(-5).map((item) => item.score)) ?? 101 };
+    }).sort((a, b) => a.score - b.score)[0];
+    const insights = [];
+    if (!ordered.length) insights.push("Import badge sessions to unlock personalized trend analysis.");
+    if (ordered.length > 0 && ordered.length < 8) insights.push("Collect at least 8 mixed sessions before trusting trend direction.");
+    if (trend !== undefined && trend <= -6) insights.push(`Recent score is down ${Math.abs(Math.round(trend))} points versus the prior window. Favor recovery, sleep, and lower-pressure practice today.`);
+    if (trend !== undefined && trend >= 6) insights.push(`Recent score is up ${Math.round(trend)} points versus the prior window. Keep the same training load for one more cycle before increasing difficulty.`);
+    if (lapsePressure >= 2) insights.push("Lapses and false starts are elevated. Use shorter blocks and add a 60-second reset between tests.");
+    if ((consistency ?? 0) > 180) insights.push("Timing spread is high, which usually points to consistency rather than raw speed. Rhythm and focus drills should be prioritized.");
+    if (latestHealth && latestHealth.sleep_hours < 6.5) insights.push("Sleep logged below 6.5 hours. Treat today's cognitive scores as recovery-sensitive.");
+    if (!latestHealth) insights.push("Add today's sleep, stress, movement, caffeine, and hydration to make readiness more useful.");
+    if (weakestType && weakestType.score < 75) insights.push(`${labels[weakestType.type]} is the current lowest-scoring mode. The training plan should start there.`);
+    return { recentScore, previousScore, accuracy, consistency, readiness, strain, trend, latestHealth, pairedCount: paired.length, correlations, weakestType, insights: insights.slice(0, 5) };
+  }, [healthLogs, sessions]);
+
   return <div className="dashboard">
     <section className="import-panel"><div><h2>Import from badge</h2><p>Desktop Chrome/Edge can import over Bluetooth LE or over USB. If transport fails, use the export file upload path.</p></div><div className="import-actions"><button onClick={importBluetooth} disabled={importing}>Bluetooth import</button><button className="secondary" onClick={importSerial} disabled={importing}>USB import</button><label className="secondary">Upload export<input type="file" accept="application/json,.json" onChange={uploadFile} disabled={importing} /></label></div></section>
     {message && <p className="notice" role="status">{message}</p>}
+
+    <section className="brain-command">
+      <div className="command-copy">
+        <p className="eyebrow">BRAIN HEALTH COMMAND CENTER</p>
+        <h2>Readiness, training, and health context in one place</h2>
+        <p>Reflex Console combines badge timing data with self-reported sleep, stress, movement, caffeine, and hydration. It is a personal wellness and training tool, not a medical diagnosis.</p>
+      </div>
+      <div className="readiness-ring" aria-label={`Readiness score ${Math.round(brainHealth.readiness)} out of 100`} style={{ "--ready": `${brainHealth.readiness}%` } as CSSProperties}>
+        <strong>{Math.round(brainHealth.readiness)}</strong>
+        <span>readiness</span>
+      </div>
+    </section>
+
+    <section className="metrics brain-metrics">
+      <MetricCard label="Brain readiness" value={nice(brainHealth.readiness)} detail="Score, consistency, lapses, and latest health context" />
+      <MetricCard label="Cognitive strain" value={nice(brainHealth.strain)} detail="Higher means recovery or lighter training may help" />
+      <MetricCard label="Recent accuracy" value={nice(brainHealth.accuracy, "%")} detail="Correct responses across recent valid attempts" />
+      <MetricCard label="Health overlap" value={String(brainHealth.pairedCount)} detail="Sessions sharing an import-day health log" />
+    </section>
+
+    <section className="workspace-grid">
+      <section className="memory-trainer">
+        <div className="section-heading"><div><h2>Adaptive memory trainer</h2><p>Visual sequence recall adjusts after each round.</p></div><button onClick={startMemoryRound} disabled={isShowingSequence}>{memorySequence.length ? "Replay round" : "New round"}</button></div>
+        <div className="memory-board" aria-label="Memory sequence buttons">{memoryTiles.map((tile) => <button key={tile.id} type="button" className={`memory-tile ${tile.name} ${playIndex >= 0 && memorySequence[playIndex] === tile.id ? "lit" : ""}`} onClick={() => chooseMemoryTile(tile.id)} disabled={isShowingSequence}>{tile.label}</button>)}</div>
+        <p className="memory-status">{memoryStatus}</p>
+        <div className="training-stats"><span>Level {memoryLevel}</span><span>Attempts {memoryStats.attempts}</span><span>Streak {memoryStats.streak}</span><span>Best {memoryStats.best}</span></div>
+      </section>
+
+      <section className="training-plan">
+        <div className="section-heading"><div><h2>Today's training plan</h2><p>Generated from your recent weakest signal.</p></div><span>{brainHealth.latestHealth ? brainHealth.latestHealth.log_date : "No log today"}</span></div>
+        <ol>
+          <li><strong>Prime:</strong> 2 minutes of easy rhythm tapping to settle timing variability.</li>
+          <li><strong>Train:</strong> 4 rounds of {brainHealth.weakestType ? labels[brainHealth.weakestType.type] : "Focus"} work, stopping if lapses climb.</li>
+          <li><strong>Recall:</strong> 3 memory-trainer rounds at level {memoryLevel}, then stop before fatigue.</li>
+          <li><strong>Review:</strong> Log sleep, stress, movement, caffeine, and hydration before comparing scores.</li>
+        </ol>
+      </section>
+    </section>
+
+    <section className="health-grid">
+      <form className="health-form" onSubmit={saveHealthLog}>
+        <div className="section-heading"><div><h2>Daily health context</h2><p>One entry per day; later saves update the same date.</p></div><button type="submit">Save context</button></div>
+        <div className="form-grid">
+          <label>Date<input type="date" value={healthForm.log_date} onChange={(event) => updateHealthField("log_date", event.target.value)} /></label>
+          <label>Sleep hours<input type="number" min="0" max="16" step=".1" value={healthForm.sleep_hours} onChange={(event) => updateHealthField("sleep_hours", event.target.value)} /></label>
+          <label>Sleep quality<input type="range" min="1" max="10" value={healthForm.sleep_quality} onChange={(event) => updateHealthField("sleep_quality", event.target.value)} /><span>{healthForm.sleep_quality}/10</span></label>
+          <label>Stress<input type="range" min="1" max="10" value={healthForm.stress} onChange={(event) => updateHealthField("stress", event.target.value)} /><span>{healthForm.stress}/10</span></label>
+          <label>Mood<input type="range" min="1" max="10" value={healthForm.mood} onChange={(event) => updateHealthField("mood", event.target.value)} /><span>{healthForm.mood}/10</span></label>
+          <label>Exercise minutes<input type="number" min="0" max="600" value={healthForm.exercise_minutes} onChange={(event) => updateHealthField("exercise_minutes", event.target.value)} /></label>
+          <label>Caffeine mg<input type="number" min="0" max="1200" value={healthForm.caffeine_mg} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /></label>
+          <label>Hydration<input type="range" min="1" max="10" value={healthForm.hydration} onChange={(event) => updateHealthField("hydration", event.target.value)} /><span>{healthForm.hydration}/10</span></label>
+        </div>
+        <label className="notes-field">Notes<textarea value={healthForm.notes} onChange={(event) => updateHealthField("notes", event.target.value)} placeholder="Medication changes, illness, travel, unusual fatigue, training notes" /></label>
+        {healthMessage && <p className="notice compact" role="status">{healthMessage}</p>}
+      </form>
+
+      <section className="insights-panel">
+        <div className="section-heading"><div><h2>Personal insights</h2><p>Rules-based signals from recent sessions and logs.</p></div><a className="secondary" href="/api/sessions/csv">Download CSV</a></div>
+        <ul>{brainHealth.insights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
+        <div className="correlations">
+          <CorrelationRow label="Sleep x score" value={brainHealth.correlations.sleep} detail="Positive values mean higher sleep aligned with higher score." />
+          <CorrelationRow label="Stress x score" value={brainHealth.correlations.stress} detail="Negative values can suggest stress-sensitive performance." />
+          <CorrelationRow label="Exercise x score" value={brainHealth.correlations.exercise} detail="Looks for import-day movement association." />
+          <CorrelationRow label="Caffeine x score" value={brainHealth.correlations.caffeine} detail="Useful for spotting overuse or timing effects." />
+        </div>
+      </section>
+    </section>
+
     <nav className="filters" aria-label="Test type filter"><button className={testType === "all" ? "active" : ""} onClick={() => setTestType("all")}>All tests</button>{TEST_TYPES.map((type) => <button key={type} className={testType === type ? "active" : ""} onClick={() => setTestType(type)}>{labels[type]}</button>)}</nav>
     <section className="metrics"><MetricCard label="Completed sessions" value={String(sessions.length)} detail={testType === "all" ? "Across all imported badges" : `${labels[testType]} only`} /><MetricCard label="Quick best" value={Number.isFinite(stats.quickBest) ? nice(stats.quickBest, " ms") : "—"} detail="Fastest non-zero Quick median" /><MetricCard label="Recent score" value={nice(stats.latest?.score)} detail={stats.latest ? `Session #${stats.latest.sequence}` : "No completed session"} /><MetricCard label="Test aggregate" value={nice(average(sessions.map((item) => item.score)))} detail="Average score in current filter" /></section>
     <p className="sequence-note">Charts are ordered by persistent session number, not real clock time.</p>
     <section className="charts"><LineChart title="Score" values={points.map((item) => ({ sequence: item.sequence, value: item.score }))} color="#70f0c0" /><LineChart title="Reaction / timing error" values={points.map((item) => ({ sequence: item.sequence, value: item.median }))} color="#82aaff" suffix=" ms" /><LineChart title="Consistency / spread" values={points.map((item) => ({ sequence: item.sequence, value: item.spread }))} color="#c79cff" suffix=" ms" /><LineChart title="Lapses and false starts" values={points.map((item) => ({ sequence: item.sequence, value: item.lapses + item.false_starts }))} color="#ff9f7a" /></section>
     <section className="aggregate"><h2>Test-specific aggregates</h2><div>{stats.byType.map(({ type, sessions: items }) => <article key={type}><strong>{labels[type]}</strong><span>{items.length} sessions</span><span>avg score {nice(average(items.map((item) => item.score)))}</span><span>avg median {nice(average(items.map((item) => item.median)), " ms")}</span></article>)}</div></section>
-    <section className="table-section"><div className="table-heading"><div><h2>Session detail</h2><p>Latest 100 retained per badge; imports remain idempotent.</p></div><div><a className="secondary" href="/api/sessions/csv">Download CSV</a><button className="danger" onClick={removeHistory}>Delete cloud history</button></div></div><div className="table-wrap"><table><thead><tr>{(["sequence", "test_type", "score", "median", "spread", "lapses", "false_starts", "attempts", "correct", "rhythm_bias"] as SortKey[]).map((key) => <th key={key}><button onClick={() => toggleSort(key)}>{key.replaceAll("_", " ")}{sort.key === key ? (sort.ascending ? " ↑" : " ↓") : ""}</button></th>)}</tr></thead><tbody>{sorted.map((item) => <tr key={`${item.badge_id}-${item.sequence}`}><td>#{item.sequence}</td><td>{labels[item.test_type]}</td><td>{item.score}</td><td>{item.median} ms</td><td>{Math.round(item.spread)} ms</td><td>{item.lapses}</td><td>{item.false_starts}</td><td>{item.attempts}</td><td>{item.correct}</td><td>{item.rhythm_bias} ms</td></tr>)}{!sorted.length && <tr><td colSpan={10}>No matching sessions.</td></tr>}</tbody></table></div></section>
+    <section className="table-section"><div className="table-heading"><div><h2>Session detail</h2><p>Latest 100 retained per badge; imports remain idempotent.</p></div><div><a className="secondary" href="/api/sessions/csv">Download CSV</a><button className="danger" onClick={removeHistory}>Delete cloud history</button></div></div><div className="table-wrap"><table><thead><tr>{(["sequence", "test_type", "score", "median", "spread", "lapses", "false_starts", "attempts", "correct", "rhythm_bias"] as SortKey[]).map((key) => <th key={key}><button onClick={() => toggleSort(key)}>{tableLabels[key]}{sort.key === key ? (sort.ascending ? " ↑" : " ↓") : ""}</button></th>)}</tr></thead><tbody>{sorted.map((item) => <tr key={`${item.badge_id}-${item.sequence}`}><td>#{item.sequence}</td><td>{labels[item.test_type]}</td><td>{item.score}</td><td>{item.median} ms</td><td>{Math.round(item.spread)} ms</td><td>{item.lapses}</td><td>{item.false_starts}</td><td>{item.attempts}</td><td>{item.correct}</td><td>{item.test_type === "memory" ? item.rhythm_bias : `${item.rhythm_bias} ms`}</td></tr>)}{!sorted.length && <tr><td colSpan={10}>No matching sessions.</td></tr>}</tbody></table></div></section>
   </div>;
 }

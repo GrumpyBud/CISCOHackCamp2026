@@ -38,6 +38,16 @@ private:
   uint8_t settingIndex = 0;
   uint8_t trial = 0;
   uint8_t eventCount = 0;
+  uint8_t memorySequence[9] = {};
+  uint8_t memoryLength = 3;
+  uint8_t memoryShowStep = 0;
+  uint8_t memoryInputStep = 0;
+  uint8_t memoryRound = 0;
+  uint8_t memoryCorrectRounds = 0;
+  uint8_t memoryCorrectSteps = 0;
+  uint8_t memoryTargetSteps = 0;
+  uint8_t memoryMistakes = 0;
+  uint8_t memoryBestSpan = 0;
 
   bool dirty = true;
   bool stimulusLeft = false;
@@ -67,10 +77,14 @@ private:
   void draw();
   void handle(InputEvent e, uint32_t now);
   void startQuick(uint32_t now);
+  void startMemory(uint32_t now);
+  void startMemoryRound(uint32_t now);
+  void finishMemory();
   void finish(TestKind kind);
   void newWait(uint32_t now, uint16_t minMs, uint16_t maxMs);
   void stimulus(uint32_t now, AppState s);
   bool action(InputEvent e) const;
+  int8_t memoryDirection(InputEvent e) const;
   void led(bool on);
   void testFeedback(const char* text, uint16_t color, uint32_t now);
   void serviceSerial();

@@ -1,4 +1,4 @@
-export const TEST_TYPES = ["quick", "focus", "choice", "rhythm"] as const;
+export const TEST_TYPES = ["quick", "focus", "choice", "rhythm", "memory"] as const;
 export type TestType = (typeof TEST_TYPES)[number];
 
 export type ExportSession = {
@@ -45,4 +45,19 @@ export type ReflexExport = {
 export type DashboardSession = ExportSession & {
   badge_id: string;
   imported_at: string;
+};
+
+export type HealthLog = {
+  id?: number;
+  log_date: string;
+  sleep_hours: number;
+  sleep_quality: number;
+  stress: number;
+  mood: number;
+  exercise_minutes: number;
+  caffeine_mg: number;
+  hydration: number;
+  notes: string;
+  created_at?: string;
+  updated_at?: string;
 };
