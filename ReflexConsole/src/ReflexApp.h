@@ -48,6 +48,7 @@ private:
   uint8_t memoryTargetSteps = 0;
   uint8_t memoryMistakes = 0;
   uint8_t memoryBestSpan = 0;
+  uint8_t memoryAttemptedSpan = 0;
 
   bool dirty = true;
   bool stimulusLeft = false;

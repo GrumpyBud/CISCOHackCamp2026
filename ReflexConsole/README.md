@@ -54,7 +54,7 @@ Modes:
 - **Focus Test:** repeated reaction events over 30, 60, or 120 seconds.
 - **Choice Test:** blue = Back/left; red = Select/right.
 - **Rhythm Test:** tap along with 24 flashes, 600 ms apart. Each tap is matched to its nearest flash; only the first tap matched to a flash counts. Timing error is the median absolute distance from a matched flash.
-- **Memory Test:** watch a short Up/Down/Left/Right sequence and repeat it using the touch pads. The sequence adapts over five rounds, then logs recall accuracy, recall timing, mistakes, score, and best span.
+- **Memory Test:** watch a short Up/Down/Left/Right sequence and repeat it using the touch pads. The sequence adapts over five rounds, then logs recall accuracy, recall timing, mistakes, score, and best completed span. A perfect 3-to-7 span run scores 100; late misses still receive credit for reached difficulty.
 
 The first five Quick Tests create a personal baseline. After that, readiness reflects reaction speed, consistency, lapses, and false starts relative to that baseline. It is a personal trend, not a diagnosis or comparison with other people.
 
@@ -99,6 +99,8 @@ These features are for personal wellness and training. They are not medical diag
 
 Daily health context is intentionally website-only in this prototype. The badge has no keyboard, so on-device features should stay tap-controller friendly: tests, training, summaries, and local session history.
 
+Research contribution is optional and off by default. If enabled, future imports copy only badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.
+
 In a final commercial-style product, the ESP32 trainer could sign into Wi-Fi and sync encrypted session data to a global processing service that returns heavier analytics back to the user account and possibly down to the trainer. That server would exist only to process and synchronize the user's brain-health training data. This repository is unlikely to fully implement that production Wi-Fi/cloud path; the practical implementation here is local badge logging plus dashboard import.
 
 For any browser, create the same uploadable JSON file with Python:
@@ -116,3 +118,4 @@ For future model and dataset work, use `docs/ai-research-agent-prompt.md` as the
 
 - Blank or incorrect display: check the TFT_eSPI setup above.
 - Touch unreliable: adjust `TOUCH_THRESHOLD` in `InputManager.cpp` for the specific badge.
+- Badge appears over Bluetooth only once: flash current firmware. The BLE service restarts advertising after dashboard disconnects, so rebooting should not be needed between imports.

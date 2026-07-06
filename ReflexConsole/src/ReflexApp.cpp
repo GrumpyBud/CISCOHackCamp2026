@@ -72,6 +72,18 @@ class BleCommandCallbacks final : public BLECharacteristicCallbacks {
  private:
   ReflexApp& app;
 };
+
+class ReflexBleServerCallbacks final : public BLEServerCallbacks {
+ public:
+  void onConnect(BLEServer*) override {
+    DEBUGF("BLE dashboard connected\n");
+  }
+
+  void onDisconnect(BLEServer*) override {
+    DEBUGF("BLE dashboard disconnected; advertising again\n");
+    BLEDevice::startAdvertising();
+  }
+};
 }  // namespace
 #endif
 
@@ -131,7 +143,7 @@ void ReflexApp::startQuick(uint32_t now) {
 void ReflexApp::startMemory(uint32_t now) {
   sampleCount = lapses = falseStarts = 0;
   memoryLength = 3;
-  memoryRound = memoryCorrectRounds = memoryCorrectSteps = memoryTargetSteps = memoryMistakes = memoryBestSpan = 0;
+  memoryRound = memoryCorrectRounds = memoryCorrectSteps = memoryTargetSteps = memoryMistakes = memoryBestSpan = memoryAttemptedSpan = 0;
   startMemoryRound(now);
   DEBUGF("Memory start\n");
 }
@@ -139,11 +151,11 @@ void ReflexApp::startMemory(uint32_t now) {
 void ReflexApp::startMemoryRound(uint32_t now) {
   if (memoryLength > 9) memoryLength = 9;
   if (memoryLength < 3) memoryLength = 3;
+  if (memoryLength > memoryAttemptedSpan) memoryAttemptedSpan = memoryLength;
   for (uint8_t i = 0; i < memoryLength; i++) memorySequence[i] = random(0, 4);
   memoryShowStep = 0;
   memoryInputStep = 0;
   memoryTargetSteps += memoryLength;
-  if (memoryLength > memoryBestSpan) memoryBestSpan = memoryLength;
   stimulusAt = now;
   nextAt = now + 450;
   change(AppState::MEMORY_SHOW);
@@ -159,8 +171,9 @@ void ReflexApp::finishMemory() {
   r.spread = sampleCount ? MathUtils::stddev(samples, sampleCount, MathUtils::mean(samples, sampleCount)) : 0;
   r.bias = memoryBestSpan;
   const float accuracy = r.attempts ? 100.f * r.correct / r.attempts : 0;
-  const float spanBonus = memoryBestSpan > 3 ? (memoryBestSpan - 3) * 5.f : 0;
-  r.score = MathUtils::clampScore(accuracy * .72f + spanBonus);
+  const float roundScore = memoryCorrectRounds * 9.f;
+  const float spanScore = MathUtils::clampScore((memoryAttemptedSpan >= 3 ? memoryAttemptedSpan - 3 : 0) * 5.f);
+  r.score = MathUtils::clampScore(roundScore + accuracy * .35f + spanScore);
   stats.recordMemory(r);
   storage.save(stats);
   storage.recordSession(TestKind::MEMORY, r);
@@ -230,6 +243,7 @@ void ReflexApp::serviceSerial() {
 void ReflexApp::startBluetooth() {
   BLEDevice::init("Reflex Console");
   bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new ReflexBleServerCallbacks());
   BLEService* service = bleServer->createService(BLE_SERVICE_UUID);
   BLECharacteristic* command = service->createCharacteristic(BLE_COMMAND_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
   command->setCallbacks(new BleCommandCallbacks(*this));
@@ -252,6 +266,7 @@ void ReflexApp::serviceBluetooth() {
   bleExportRequested = false;
   BleNotifyPrint out(bleDataCharacteristic);
   storage.exportHistory(out);
+  BLEDevice::startAdvertising();
 }
 #endif
 
@@ -470,6 +485,7 @@ void ReflexApp::handle(InputEvent e, uint32_t now) {
       nextAt = now + 5000;
       if (memoryInputStep >= memoryLength) {
         memoryCorrectRounds++;
+        if (memoryLength > memoryBestSpan) memoryBestSpan = memoryLength;
         snprintf(feedback, sizeof(feedback), "MATCH");
         feedbackColor = TFT_GREEN;
         memoryRound++;

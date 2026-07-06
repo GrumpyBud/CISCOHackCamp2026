@@ -5,6 +5,7 @@ import { exportFromFrames } from "@/lib/export";
 import { DashboardSession, HealthLog, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
 
 type SortKey = keyof Pick<DashboardSession, "sequence" | "test_type" | "score" | "median" | "spread" | "lapses" | "false_starts" | "attempts" | "correct" | "rhythm_bias">;
+type ResearchConsent = { enabled: boolean; updated_at: string };
 type SerialReader = ReadableStreamDefaultReader<Uint8Array>;
 type BrowserSerialPort = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable: ReadableStream<Uint8Array> | null; writable: WritableStream<Uint8Array> | null };
 type BrowserSerial = { requestPort(): Promise<BrowserSerialPort> };
@@ -174,10 +175,12 @@ export function Dashboard() {
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
   const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
   const [healthForm, setHealthForm] = useState<HealthLog>(() => blankHealthLog());
+  const [researchConsent, setResearchConsent] = useState<ResearchConsent>({ enabled: true, updated_at: "" });
   const [testType, setTestType] = useState<"all" | TestType>("all");
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "sequence", ascending: false });
   const [message, setMessage] = useState("Loading sessions…");
   const [healthMessage, setHealthMessage] = useState("");
+  const [researchMessage, setResearchMessage] = useState("");
   const [importing, setImporting] = useState(false);
   const [memoryLevel, setMemoryLevel] = useState(3);
   const [memorySequence, setMemorySequence] = useState<number[]>([]);
@@ -203,6 +206,14 @@ export function Dashboard() {
     setHealthLogs(body.logs);
   }, []);
   useEffect(() => { loadHealth().catch((error: Error) => setHealthMessage(error.message)); }, [loadHealth]);
+
+  const loadResearchConsent = useCallback(async () => {
+    const response = await fetch("/api/research-consent", { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not load research contribution setting");
+    setResearchConsent(body.consent);
+  }, []);
+  useEffect(() => { loadResearchConsent().catch((error: Error) => setResearchMessage(error.message)); }, [loadResearchConsent]);
 
   useEffect(() => {
     if (!isShowingSequence || !memorySequence.length) return undefined;
@@ -353,6 +364,19 @@ export function Dashboard() {
       setHealthMessage(`Added ${body.log.context} context for ${body.log.log_date} at ${body.log.log_time}.`);
     } catch (error) {
       setHealthMessage(error instanceof Error ? error.message : "Could not save health log");
+    }
+  };
+
+  const toggleResearchConsent = async (enabled: boolean) => {
+    setResearchMessage("Saving research contribution setting…");
+    try {
+      const response = await fetch("/api/research-consent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not save research contribution setting");
+      setResearchConsent(body.consent);
+      setResearchMessage(enabled ? "Research contribution enabled for future imports." : "Research contribution disabled.");
+    } catch (error) {
+      setResearchMessage(error instanceof Error ? error.message : "Could not save research contribution setting");
     }
   };
 
@@ -579,6 +603,18 @@ export function Dashboard() {
         </div>
       </section>
     </section>
+
+    <details className="settings-panel">
+      <summary>Data & privacy settings</summary>
+      <section className="research-panel">
+        <div>
+          <h2>Research contribution</h2>
+          <p>Optional and off by default. When enabled, future imports copy badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.</p>
+        </div>
+        <label className="consent-toggle"><input type="checkbox" checked={researchConsent.enabled} onChange={(event) => toggleResearchConsent(event.target.checked)} /> Contribute pseudonymous session metrics from future imports</label>
+        {researchMessage && <p className="notice compact" role="status">{researchMessage}</p>}
+      </section>
+    </details>
 
     <nav className="filters" aria-label="Test type filter"><button className={testType === "all" ? "active" : ""} onClick={() => setTestType("all")}>All tests</button>{TEST_TYPES.map((type) => <button key={type} className={testType === type ? "active" : ""} onClick={() => setTestType(type)}>{labels[type]}</button>)}</nav>
     <section className="metrics"><MetricCard label="Completed sessions" value={String(sessions.length)} detail={testType === "all" ? "Across all imported badges" : `${labels[testType]} only`} /><MetricCard label="Quick best" value={Number.isFinite(stats.quickBest) ? nice(stats.quickBest, " ms") : "—"} detail="Fastest non-zero Quick median" /><MetricCard label="Recent score" value={nice(stats.latest?.score)} detail={stats.latest ? `Session #${stats.latest.sequence}` : "No completed session"} /><MetricCard label="Test aggregate" value={nice(average(sessions.map((item) => item.score)))} detail="Average score in current filter" /></section>
