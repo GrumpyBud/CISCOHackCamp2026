@@ -11,8 +11,10 @@ export async function GET() {
     SELECT d.badge_id, s.sequence, s.test_type, s.score, s.median_ms, s.spread_ms,
            s.lapses, s.false_starts, s.attempts, s.correct, s.rhythm_bias_ms, s.imported_at,
            h.log_time, h.context AS health_context, h.wake_time, h.sleep_hours, h.sleep_quality, h.stress, h.mood, h.exercise_minutes,
-           h.caffeine_mg, h.caffeine_recent_mg, h.hydration, h.notes AS health_notes
+           h.caffeine_mg, h.caffeine_recent_mg, h.hydration, h.notes AS health_notes,
+           rp.age_years, rp.account_age_days, rp.gender, rp.handedness, rp.notes AS profile_notes
     FROM sessions s JOIN devices d ON d.id = s.device_id
+    LEFT JOIN research_profile rp ON rp.clerk_user_id = s.clerk_user_id
     LEFT JOIN LATERAL (
       SELECT left(log_time::text, 5) AS log_time, context, left(wake_time::text, 5) AS wake_time,
              sleep_hours, sleep_quality, stress, mood, exercise_minutes, caffeine_mg, caffeine_recent_mg, hydration, notes
@@ -29,8 +31,9 @@ export async function GET() {
     log_time: string | null; health_context: string | null; wake_time: string | null;
     sleep_hours: number | null; sleep_quality: number | null; stress: number | null; mood: number | null;
     exercise_minutes: number | null; caffeine_mg: number | null; caffeine_recent_mg: number | null; hydration: number | null; health_notes: string | null;
+    age_years: number | null; account_age_days: number | null; gender: string | null; handedness: string | null; profile_notes: string | null;
   }[];
-  const headers = ["badge_id", "sequence", "test_type", "score", "median_ms", "spread_ms", "lapses", "false_starts", "attempts", "correct", "rhythm_bias_ms", "imported_at", "log_time", "health_context", "wake_time", "sleep_hours", "sleep_quality", "stress", "mood", "exercise_minutes", "caffeine_mg", "caffeine_recent_mg", "hydration", "health_notes"];
+  const headers = ["badge_id", "sequence", "test_type", "score", "median_ms", "spread_ms", "lapses", "false_starts", "attempts", "correct", "rhythm_bias_ms", "imported_at", "log_time", "health_context", "wake_time", "sleep_hours", "sleep_quality", "stress", "mood", "exercise_minutes", "caffeine_mg", "caffeine_recent_mg", "hydration", "health_notes", "age_years", "account_age_days", "gender", "handedness", "profile_notes"];
   const body = [headers.join(","), ...rows.map((row) => headers.map((header) => quote(row[header as keyof typeof row])).join(","))].join("\n");
   return new Response(body, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=reflex-sessions.csv" } });
 }

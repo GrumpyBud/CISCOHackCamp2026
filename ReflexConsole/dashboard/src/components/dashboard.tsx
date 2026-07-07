@@ -1,11 +1,14 @@
 "use client";
 
+import { useUser } from "@clerk/nextjs";
 import { ChangeEvent, CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { exportFromFrames } from "@/lib/export";
 import { DashboardSession, HealthLog, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
 
 type SortKey = keyof Pick<DashboardSession, "sequence" | "test_type" | "score" | "median" | "spread" | "lapses" | "false_starts" | "attempts" | "correct" | "rhythm_bias">;
 type ResearchConsent = { enabled: boolean; updated_at: string };
+type ResearchProfile = { age_years: string; account_age_days: string; gender: string; handedness: string; notes: string };
+type ResearchDataRow = { sequence: number; test_type: string; score: number; median_ms: number; spread_ms: number; lapses: number; false_starts: number; attempts: number; correct: number; rhythm_bias_ms: number; imported_at: string };
 type SerialReader = ReadableStreamDefaultReader<Uint8Array>;
 type BrowserSerialPort = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable: ReadableStream<Uint8Array> | null; writable: WritableStream<Uint8Array> | null };
 type BrowserSerial = { requestPort(): Promise<BrowserSerialPort> };
@@ -73,6 +76,14 @@ const blankHealthLog = (): HealthLog => ({
   caffeine_recent_mg: 0,
   hydration: 7,
   notes: "",
+});
+const blankResearchProfile = (): ResearchProfile => ({ age_years: "", account_age_days: "", gender: "", handedness: "", notes: "" });
+const normalizeResearchProfile = (profile: Partial<ResearchProfile> | null | undefined): ResearchProfile => ({
+  age_years: profile?.age_years ?? "",
+  account_age_days: profile?.account_age_days ?? "",
+  gender: profile?.gender ?? "",
+  handedness: profile?.handedness ?? "",
+  notes: profile?.notes ?? "",
 });
 const memoryTiles = [
   { id: 0, label: "A", name: "amber" },
@@ -176,6 +187,9 @@ export function Dashboard() {
   const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
   const [healthForm, setHealthForm] = useState<HealthLog>(() => blankHealthLog());
   const [researchConsent, setResearchConsent] = useState<ResearchConsent>({ enabled: true, updated_at: "" });
+  const [researchProfile, setResearchProfile] = useState<ResearchProfile>(() => blankResearchProfile());
+  const [researchDataRows, setResearchDataRows] = useState<ResearchDataRow[]>([]);
+  const [researchDataMessage, setResearchDataMessage] = useState("");
   const [testType, setTestType] = useState<"all" | TestType>("all");
   const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "sequence", ascending: false });
   const [message, setMessage] = useState("Loading sessions…");
@@ -189,6 +203,14 @@ export function Dashboard() {
   const [isShowingSequence, setIsShowingSequence] = useState(false);
   const [memoryStatus, setMemoryStatus] = useState("Start with a short visual sequence, then repeat it from memory.");
   const [memoryStats, setMemoryStats] = useState({ attempts: 0, streak: 0, best: 0 });
+  const { user, isLoaded } = useUser();
+
+  const accountAgeDays = useMemo(() => {
+    if (!user?.createdAt) return null;
+    const createdAt = new Date(user.createdAt);
+    if (Number.isNaN(createdAt.getTime())) return null;
+    return Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86_400_000));
+  }, [user?.createdAt]);
 
   const load = useCallback(async (filter = testType) => {
     const response = await fetch(`/api/sessions${filter === "all" ? "" : `?testType=${filter}`}`, { cache: "no-store" });
@@ -209,11 +231,33 @@ export function Dashboard() {
 
   const loadResearchConsent = useCallback(async () => {
     const response = await fetch("/api/research-consent", { cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not load research contribution setting");
-    setResearchConsent(body.consent);
-  }, []);
+    const text = await response.text();
+    let body: { error?: string; consent?: ResearchConsent; profile?: Partial<ResearchProfile> } | null = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not load research contribution setting" }; }
+    if (!response.ok) throw new Error(body?.error || "Could not load research contribution setting");
+    const resolvedProfile = normalizeResearchProfile({
+      ...body?.profile,
+      account_age_days: body?.profile?.account_age_days ?? (accountAgeDays?.toString() ?? ""),
+    });
+    setResearchConsent(body?.consent ?? { enabled: true, updated_at: "" });
+    setResearchProfile(resolvedProfile);
+  }, [accountAgeDays]);
   useEffect(() => { loadResearchConsent().catch((error: Error) => setResearchMessage(error.message)); }, [loadResearchConsent]);
+
+  const loadResearchData = useCallback(async () => {
+    const response = await fetch("/api/research-data", { cache: "no-store" });
+    const text = await response.text();
+    let body: { error?: string; sessions?: ResearchDataRow[] } | null = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not load research data" }; }
+    if (!response.ok) throw new Error(body?.error || "Could not load research data");
+    setResearchDataRows(body?.sessions ?? []);
+  }, []);
+  useEffect(() => { loadResearchData().catch((error: Error) => setResearchDataMessage(error.message)); }, [loadResearchData]);
+
+  useEffect(() => {
+    if (!isLoaded || !accountAgeDays || researchProfile.account_age_days) return;
+    setResearchProfile((current) => ({ ...current, account_age_days: String(accountAgeDays) }));
+  }, [accountAgeDays, isLoaded, researchProfile.account_age_days]);
 
   useEffect(() => {
     if (!isShowingSequence || !memorySequence.length) return undefined;
@@ -367,17 +411,47 @@ export function Dashboard() {
     }
   };
 
-  const toggleResearchConsent = async (enabled: boolean) => {
-    setResearchMessage("Saving research contribution setting…");
+  const saveResearchSettings = async (enabled: boolean, profile: ResearchProfile = researchProfile) => {
+    setResearchMessage("Saving research settings…");
     try {
-      const response = await fetch("/api/research-consent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "Could not save research contribution setting");
-      setResearchConsent(body.consent);
+      const nextProfile = {
+        ...profile,
+        account_age_days: profile.account_age_days || (accountAgeDays?.toString() ?? ""),
+      };
+      const response = await fetch("/api/research-consent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, profile: nextProfile }),
+      });
+      const text = await response.text();
+      let body: { error?: string; consent?: ResearchConsent; profile?: Partial<ResearchProfile> } | null = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not save research settings" }; }
+      if (!response.ok) throw new Error(body?.error || "Could not save research settings");
+      setResearchConsent(body?.consent ?? { enabled, updated_at: "" });
+      setResearchProfile(normalizeResearchProfile({ ...body?.profile, account_age_days: body?.profile?.account_age_days ?? nextProfile.account_age_days }));
       setResearchMessage(enabled ? "Research contribution enabled for future imports." : "Research contribution disabled.");
     } catch (error) {
-      setResearchMessage(error instanceof Error ? error.message : "Could not save research contribution setting");
+      setResearchMessage(error instanceof Error ? error.message : "Could not save research settings");
     }
+  };
+
+  const toggleResearchConsent = async (enabled: boolean) => {
+    await saveResearchSettings(enabled, researchProfile);
+  };
+
+  const updateResearchProfileField = (field: keyof ResearchProfile, value: string) => {
+    setResearchProfile((current) => ({ ...current, [field]: value }));
+  };
+
+  const saveResearchProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await saveResearchSettings(researchConsent.enabled, researchProfile);
+  };
+
+  const skipResearchProfile = async () => {
+    const skippedProfile = blankResearchProfile();
+    setResearchProfile(skippedProfile);
+    await saveResearchSettings(researchConsent.enabled, skippedProfile);
   };
 
   const startMemoryRound = () => {
@@ -607,12 +681,49 @@ export function Dashboard() {
     <details className="settings-panel">
       <summary>Data & privacy settings</summary>
       <section className="research-panel">
-        <div>
-          <h2>Research contribution</h2>
-          <p>Optional and off by default. When enabled, future imports copy badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.</p>
-        </div>
-        <label className="consent-toggle"><input type="checkbox" checked={researchConsent.enabled} onChange={(event) => toggleResearchConsent(event.target.checked)} /> Contribute pseudonymous session metrics from future imports</label>
-        {researchMessage && <p className="notice compact" role="status">{researchMessage}</p>}
+        <section className="settings-stack">
+          <div className="section-heading"><div><h2>User setup</h2><p>Optional, non-invasive profile details that help research analysis. Leave any field blank if you prefer not to share it.</p></div></div>
+          <form className="health-form settings-form" onSubmit={saveResearchProfile}>
+            <div className="form-grid">
+              <label>Age<input type="number" min="1" max="120" value={researchProfile.age_years} onChange={(event) => updateResearchProfileField("age_years", event.target.value)} placeholder="Optional" /></label>
+              <label>Gender<select value={researchProfile.gender} onChange={(event) => updateResearchProfileField("gender", event.target.value)}>
+                <option value="">Prefer not to say</option>
+                <option value="woman">Woman</option>
+                <option value="man">Man</option>
+                <option value="non-binary">Non-binary</option>
+                <option value="another">Another identity</option>
+              </select></label>
+              <label>Dominant hand<select value={researchProfile.handedness} onChange={(event) => updateResearchProfileField("handedness", event.target.value)}>
+                <option value="">Prefer not to say</option>
+                <option value="right">Right</option>
+                <option value="left">Left</option>
+                <option value="ambidextrous">Ambidextrous</option>
+              </select></label>
+              <div className="read-only-field"><span>Account age</span><strong>{isLoaded && accountAgeDays !== null ? `${accountAgeDays} days` : researchProfile.account_age_days ? `${researchProfile.account_age_days} days` : "Not available yet"}</strong></div>
+            </div>
+            <label className="notes-field">Extra context<textarea value={researchProfile.notes} onChange={(event) => updateResearchProfileField("notes", event.target.value)} placeholder="Optional: beginner, recent injury, ADHD, migraines, etc." /></label>
+            <div className="settings-actions">
+              <div className="settings-actions-group">
+                <button type="submit">Save profile</button>
+                <button type="button" className="secondary" onClick={skipResearchProfile}>Skip for now</button>
+              </div>
+              <p className="settings-help">These details stay optional and are only used for aggregate research summaries.</p>
+            </div>
+          </form>
+        </section>
+        <section className="settings-stack">
+          <div>
+            <h2>Research contribution</h2>
+            <p>Optional and enabled by default. When enabled, future imports copy badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.</p>
+          </div>
+          <label className="consent-toggle"><input type="checkbox" checked={researchConsent.enabled} onChange={(event) => toggleResearchConsent(event.target.checked)} /> Contribute pseudonymous session metrics from future imports</label>
+          {researchMessage && <p className="notice compact" role="status">{researchMessage}</p>}
+        </section>
+        <section className="settings-stack">
+          <div className="section-heading"><div><h2>Research data viewer</h2><p>Recent pseudonymous session rows stored for your account.</p></div></div>
+          {researchDataMessage && <p className="notice compact" role="status">{researchDataMessage}</p>}
+          {researchDataRows.length ? <div className="table-wrap"><table><thead><tr><th>Test</th><th>Score</th><th>Median</th><th>Spread</th><th>Imported</th></tr></thead><tbody>{researchDataRows.map((row) => <tr key={`${row.sequence}-${row.imported_at}`}><td>{row.test_type}</td><td>{row.score}</td><td>{row.median_ms} ms</td><td>{row.spread_ms} ms</td><td>{new Date(row.imported_at).toLocaleString()}</td></tr>)}</tbody></table></div> : <p>No research rows yet. Import a badge session with research contribution enabled to populate this view.</p>}
+        </section>
       </section>
     </details>
 

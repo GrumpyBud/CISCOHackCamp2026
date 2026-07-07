@@ -1,9 +1,9 @@
 #pragma once
 
 // User-visible version shown on the boot screen. Bump it for each release.
-#define FIRMWARE_VERSION "1.3.0"
+#define FIRMWARE_VERSION "1.5.4"
 #define DEBUG_SERIAL 1
-#define ENABLE_BUZZER 0
+#define ENABLE_BUZZER 1
 #define ENABLE_WIFI_DASHBOARD 0
 #define ENABLE_BLE_DASHBOARD 1
 #define USE_TOUCH_INPUT 1

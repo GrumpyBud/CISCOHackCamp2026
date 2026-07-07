@@ -5,7 +5,7 @@
 namespace Pins {
 constexpr uint8_t LED = 22;
 // Optional external feedback; disabled by default because it requires wiring at TP9.
-constexpr uint8_t BUZZER = 13;
+constexpr uint8_t BUZZER = 32;
 // All controls are the badge's built-in capacitive pads; no external wiring is required.
 // Badge D-pad: S2 = Up, S3 = Down, S0 = Left, S4 = Right.
 constexpr uint8_t TOUCH_UP = 2, TOUCH_DOWN = 15, TOUCH_LEFT = 4, TOUCH_RIGHT = 13;
