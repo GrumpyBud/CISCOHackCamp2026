@@ -1,11 +1,13 @@
 import { auth } from "@clerk/nextjs/server";
 import { getSql } from "@/lib/db";
+import { ensureResearchTables } from "@/lib/research";
 
 const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 export async function GET() {
   const { userId } = await auth();
   if (!userId) return new Response("Unauthorized", { status: 401 });
+  await ensureResearchTables();
   const sql = getSql();
   const rows = await sql`
     SELECT d.badge_id, s.sequence, s.test_type, s.score, s.median_ms, s.spread_ms,

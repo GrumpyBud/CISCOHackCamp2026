@@ -16,6 +16,10 @@ Short setup and usage guide: required libraries, TFT_eSPI configuration, badge p
 
 This document.
 
+### `AGENTS.md`
+
+First-read contributor guide for humans and coding agents. It summarizes setup, validation, repo boundaries, generated files, and common change locations. Keep this file guide as the detailed map of tracked files, and keep `AGENTS.md` as the shorter working guide.
+
 ## VS Code configuration
 
 ### `.vscode/c_cpp_properties.json`
@@ -52,7 +56,7 @@ Start here when changing test flow, adding a menu item, or changing displayed co
 Compile-time feature flags and firmware version:
 
 - `DEBUG_SERIAL` enables serial diagnostics.
-- `ENABLE_BUZZER` enables optional external GPIO13/TP9 tone output.
+- `ENABLE_BUZZER` enables optional external GPIO32/TP9 tone output.
 - `ENABLE_WIFI_DASHBOARD` is reserved and disabled.
 - `USE_TOUCH_INPUT` enables the built-in capacitive controls.
 

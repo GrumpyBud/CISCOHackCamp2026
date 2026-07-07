@@ -4,7 +4,7 @@
 // CUHSP 2021 badge defaults. All badge GPIO is 3.3 V logic.
 namespace Pins {
 constexpr uint8_t LED = 22;
-// Optional external feedback; disabled by default because it requires wiring at TP9.
+// Optional external feedback. ENABLE_BUZZER expects a buzzer wired at TP9.
 constexpr uint8_t BUZZER = 32;
 // All controls are the badge's built-in capacitive pads; no external wiring is required.
 // Badge D-pad: S2 = Up, S3 = Down, S0 = Left, S4 = Right.

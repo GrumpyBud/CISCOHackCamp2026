@@ -1,10 +1,31 @@
--- Optional research contribution tables. Session metrics are copied here only
--- after a signed-in user explicitly enables contribution.
+-- Optional research contribution tables. Session metrics are copied here when
+-- research contribution remains enabled for the signed-in user. Research
+-- sessions use salted pseudonymous user and badge hashes and do not copy
+-- direct identifiers, health check-ins, or profile notes.
 CREATE TABLE IF NOT EXISTS research_consent (
   clerk_user_id TEXT PRIMARY KEY,
-  enabled BOOLEAN NOT NULL DEFAULT false,
+  enabled BOOLEAN NOT NULL DEFAULT true,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE research_consent ALTER COLUMN enabled SET DEFAULT true;
+
+CREATE TABLE IF NOT EXISTS research_profile (
+  clerk_user_id TEXT PRIMARY KEY,
+  age_years INTEGER,
+  gender TEXT,
+  handedness TEXT,
+  account_age_days INTEGER,
+  notes TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS age_years INTEGER;
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS gender TEXT;
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS handedness TEXT;
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS account_age_days INTEGER;
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE research_profile ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS research_sessions (
   id BIGSERIAL PRIMARY KEY,

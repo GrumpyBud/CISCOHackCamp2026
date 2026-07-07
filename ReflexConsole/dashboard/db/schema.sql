@@ -54,7 +54,17 @@ CREATE INDEX IF NOT EXISTS health_logs_user_date_idx ON health_logs (clerk_user_
 
 CREATE TABLE IF NOT EXISTS research_consent (
   clerk_user_id TEXT PRIMARY KEY,
-  enabled BOOLEAN NOT NULL DEFAULT false,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS research_profile (
+  clerk_user_id TEXT PRIMARY KEY,
+  age_years INTEGER,
+  gender TEXT,
+  handedness TEXT,
+  account_age_days INTEGER,
+  notes TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

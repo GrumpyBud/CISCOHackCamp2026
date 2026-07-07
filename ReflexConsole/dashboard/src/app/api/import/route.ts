@@ -6,16 +6,6 @@ import { recordResearchSessions } from "@/lib/research";
 
 export const runtime = "nodejs";
 
-async function ensureSessionTestTypes() {
-  const sql = getSql();
-  await sql`ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_test_type_check`;
-  await sql`
-    ALTER TABLE sessions
-    ADD CONSTRAINT sessions_test_type_check
-    CHECK (test_type IN ('quick', 'focus', 'choice', 'rhythm', 'memory'))
-  `;
-}
-
 export async function POST(request: Request) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -23,7 +13,6 @@ export async function POST(request: Request) {
   try {
     const payload = validateExport(await request.json());
     const sql = getSql();
-    await ensureSessionTestTypes();
     const devices = await sql`
       INSERT INTO devices (clerk_user_id, badge_id, firmware_version, history_capacity, updated_at)
       VALUES (${userId}, ${payload.begin.badge_id}, ${payload.begin.firmware_version}, ${payload.begin.history_capacity}, now())

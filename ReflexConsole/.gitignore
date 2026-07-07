@@ -1,1 +1,8 @@
-.vercel
+node_modules/
+.next/
+*.tsbuildinfo
+__pycache__/
+.env.local
+.vercel/
+reflex-export.json
+reflex-export*.json

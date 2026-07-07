@@ -208,8 +208,7 @@ void ReflexApp::finish(TestKind k) {
     change(AppState::FOCUS_SUMMARY);
   } else if (k == TestKind::CHOICE) {
     r.score = MathUtils::clampScore((r.attempts ? 100.f * r.correct / r.attempts : 0) * .55f + (r.median ? 45000.f / r.median : 0) * .45f);
-    stats.last = r;
-    stats.sessions++;
+    stats.recordChoice(r);
     change(AppState::CHOICE_SUMMARY);
   } else {
     r.bias = sampleCount ? rhythmTotal / sampleCount : 0;

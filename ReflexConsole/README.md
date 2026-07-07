@@ -36,8 +36,9 @@ Open `ReflexConsole.ino` in Arduino IDE, select your ESP32 board, and upload.
 | LED | 22 (built in) |
 | Up / Down / Left / Right touch | 2 / 15 / 4 / 13 |
 | Select / Back / Start / Menu touch | 12 / 14 / 27 / 33 |
+| Optional buzzer | 32 / TP9 |
 
-The tester uses only the badge's built-in display, LED, and capacitive pads; it needs no joystick, buzzer, or other wiring. All GPIO is 3.3 V only.
+The tester uses the badge's built-in display, LED, and capacitive pads, so it needs no joystick or extra input wiring. Sound feedback is enabled in `src/config/BuildConfig.h` and expects an optional buzzer on GPIO32/TP9. Disable `ENABLE_BUZZER` if no buzzer is wired. All GPIO is 3.3 V only.
 
 Touch-pad mapping follows an Xbox-style layout: S2 = Up, S3 = Down, S0 = Left, S4 = Right; S5 = A/Select, S6 = B/Back, S8 = X/Menu, and S7 = Y/Start.
 
@@ -99,9 +100,9 @@ These features are for personal wellness and training. They are not medical diag
 
 Daily health context is intentionally website-only in this prototype. The badge has no keyboard, so on-device features should stay tap-controller friendly: tests, training, summaries, and local session history.
 
-Research contribution is optional and off by default. If enabled, future imports copy only badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.
+Research contribution is optional and enabled by default. When enabled, future imports copy only badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, profile notes, email, name, and Clerk account IDs are not copied into research session rows.
 
-In a final commercial-style product, the ESP32 trainer could sign into Wi-Fi and sync encrypted session data to a global processing service that returns heavier analytics back to the user account and possibly down to the trainer. That server would exist only to process and synchronize the user's brain-health training data. This repository is unlikely to fully implement that production Wi-Fi/cloud path; the practical implementation here is local badge logging plus dashboard import.
+In a final commercial-style product, the ESP32 trainer could sign into Wi-Fi and sync protected session data to a global processing service that returns heavier analytics back to the user account and possibly down to the trainer. That server would exist only to process and synchronize the user's brain-health training data. This repository is unlikely to fully implement that production Wi-Fi/cloud path; the practical implementation here is local badge logging plus dashboard import, scoped to the signed-in user and backed by the dashboard deployment's database/security controls.
 
 For any browser, create the same uploadable JSON file with Python:
 

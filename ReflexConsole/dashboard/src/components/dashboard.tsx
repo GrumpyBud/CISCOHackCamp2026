@@ -637,7 +637,7 @@ export function Dashboard() {
       </section>
 
       <section className="training-plan">
-        <div className="section-heading"><div><h2>Today's training plan</h2><p>Generated from your recent weakest signal.</p></div><span>{brainHealth.latestHealth ? brainHealth.latestHealth.log_date : "No log today"}</span></div>
+        <div className="section-heading"><div><h2>Today&apos;s training plan</h2><p>Generated from your recent weakest signal.</p></div><span>{brainHealth.latestHealth ? brainHealth.latestHealth.log_date : "No log today"}</span></div>
         <ol>
           <li><strong>Prime:</strong> 2 minutes of easy rhythm tapping to settle timing variability.</li>
           <li><strong>Train:</strong> 4 rounds of {brainHealth.weakestType ? labels[brainHealth.weakestType.type] : "Focus"} work, stopping if lapses climb.</li>
@@ -658,7 +658,7 @@ export function Dashboard() {
           <label>Stress<input type="range" min="1" max="10" value={healthForm.stress} onChange={(event) => updateHealthField("stress", event.target.value)} /><span>{healthForm.stress}/10</span></label>
           <label>Mood<input type="range" min="1" max="10" value={healthForm.mood} onChange={(event) => updateHealthField("mood", event.target.value)} /><span>{healthForm.mood}/10</span></label>
           <label>Exercise minutes<input type="number" min="0" max="600" value={healthForm.exercise_minutes} onChange={(event) => updateHealthField("exercise_minutes", event.target.value)} /></label>
-          <label>Total caffeine mg<input type="number" min={caffeineMinimum} max="1200" value={caffeineTotal} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /><span>Minimum from today's logs: {caffeineMinimum} mg</span></label>
+          <label>Total caffeine mg<input type="number" min={caffeineMinimum} max="1200" value={caffeineTotal} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /><span>Minimum from today&apos;s logs: {caffeineMinimum} mg</span></label>
           <label>Recent caffeine mg<input type="number" min="0" max="1200" value={healthForm.caffeine_recent_mg} onChange={(event) => updateHealthField("caffeine_recent_mg", event.target.value)} /></label>
           <label>Hydration<input type="range" min="1" max="10" value={healthForm.hydration} onChange={(event) => updateHealthField("hydration", event.target.value)} /><span>{healthForm.hydration}/10</span></label>
         </div>
