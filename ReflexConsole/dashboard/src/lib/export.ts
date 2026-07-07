@@ -1,5 +1,7 @@
 import { ExportBegin, ExportEnd, ExportSession, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
 
+export const BADGE_EXPORT_PREFIX = "REFLEX_EXPORT ";
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isInteger = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -53,4 +55,19 @@ export function exportFromFrames(frames: unknown[]): ReflexExport {
   const end = parsed.find((frame) => frame.type === "end");
   const sessions = parsed.filter((frame) => frame.type === "session");
   return validateExport({ format: "reflex-console-export", protocol: 1, begin, sessions, end });
+}
+
+export function parseBadgeExportStream(value: string): ReflexExport {
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) fail("empty badge export stream");
+  const frames = lines.map((line) => {
+    if (!line.startsWith(BADGE_EXPORT_PREFIX)) fail("badge export stream missing REFLEX_EXPORT prefix");
+    const json = line.slice(BADGE_EXPORT_PREFIX.length);
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      throw new Error(`Invalid badge export stream: ${error instanceof Error ? error.message : "bad JSON"}`);
+    }
+  });
+  return exportFromFrames(frames);
 }

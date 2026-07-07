@@ -24,8 +24,17 @@ export async function POST(request: Request) {
     ` as unknown as { id: number }[];
     const deviceId = devices[0]?.id;
     if (!deviceId) throw new Error("Could not create device");
+    const existingSessions = await sql`
+      SELECT sequence
+      FROM sessions
+      WHERE clerk_user_id = ${userId} AND device_id = ${deviceId}
+    ` as unknown as { sequence: number }[];
+    const existingSequences = new Set(existingSessions.map((row) => row.sequence));
+    let duplicateCount = 0;
+    let importedCount = 0;
 
     for (const session of payload.sessions) {
+      const duplicate = existingSequences.has(session.sequence);
       await sql`
         INSERT INTO sessions (
           clerk_user_id, device_id, sequence, test_type, score, median_ms, spread_ms,
@@ -38,9 +47,11 @@ export async function POST(request: Request) {
           spread_ms = EXCLUDED.spread_ms, lapses = EXCLUDED.lapses, false_starts = EXCLUDED.false_starts,
           attempts = EXCLUDED.attempts, correct = EXCLUDED.correct, rhythm_bias_ms = EXCLUDED.rhythm_bias_ms
       `;
+      if (duplicate) duplicateCount++;
+      else importedCount++;
     }
     const researchImported = await recordResearchSessions(userId, payload);
-    return NextResponse.json({ imported: payload.sessions.length, badgeId: payload.begin.badge_id, researchImported });
+    return NextResponse.json({ imported: importedCount, duplicates: duplicateCount, badgeId: payload.begin.badge_id, researchImported });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed";
     return NextResponse.json({ error: message }, { status: 400 });

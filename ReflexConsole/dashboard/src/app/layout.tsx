@@ -4,12 +4,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Reflex Console",
-  description: "Private brain health training and performance trend analysis",
+  description: "Private ESP32 badge performance and reaction-training dashboard",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <html lang="en"><body><ClerkProvider>
-    <nav className="auth-nav" aria-label="Account">
+    <nav className="auth-nav" aria-label="Account controls">
       <SignedOut><SignInButton><button className="secondary">Sign in</button></SignInButton><SignUpButton><button>Sign up</button></SignUpButton></SignedOut>
       <SignedIn><UserButton /></SignedIn>
     </nav>

@@ -1,737 +1,955 @@
 "use client";
 
-import { useUser } from "@clerk/nextjs";
-import { ChangeEvent, CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { exportFromFrames } from "@/lib/export";
-import { DashboardSession, HealthLog, ReflexExport, TEST_TYPES, TestType } from "@/lib/types";
+import { SignInButton, SignUpButton, useUser } from "@clerk/nextjs";
+import { ChangeEvent, CSSProperties, FormEvent, Fragment, PointerEvent, ReactNode, useMemo, useState } from "react";
+import {
+  buildReadiness,
+  contributors,
+  correlation,
+  dataQualityFlags,
+  formatDateTime,
+  metricForSession,
+  metricLabel,
+  metricSuffix,
+  readinessTimeline,
+  scoreTrendsByType,
+  summarizeTestMode,
+  todayVsBaseline,
+  trendByType,
+  TrendPoint,
+} from "@/lib/analytics";
+import { readBadgeExport } from "@/lib/badge-import";
+import { demoData } from "@/lib/demo-data";
+import { previewImportPayload } from "@/lib/import-validation";
+import { buildTrainingSuggestions, TrainingSuggestion } from "@/lib/recommendations";
+import { BadgeDevice, DashboardSession, HealthLog, ImportBatch, ReflexExport, ResearchPreviewRow, TEST_LABELS, TEST_TYPES, TestType } from "@/lib/types";
 
-type SortKey = keyof Pick<DashboardSession, "sequence" | "test_type" | "score" | "median" | "spread" | "lapses" | "false_starts" | "attempts" | "correct" | "rhythm_bias">;
-type ResearchConsent = { enabled: boolean; updated_at: string };
-type ResearchProfile = { age_years: string; account_age_days: string; gender: string; handedness: string; notes: string };
-type ResearchDataRow = { sequence: number; test_type: string; score: number; median_ms: number; spread_ms: number; lapses: number; false_starts: number; attempts: number; correct: number; rhythm_bias_ms: number; imported_at: string };
-type SerialReader = ReadableStreamDefaultReader<Uint8Array>;
-type BrowserSerialPort = { open(options: { baudRate: number }): Promise<void>; close(): Promise<void>; readable: ReadableStream<Uint8Array> | null; writable: WritableStream<Uint8Array> | null };
-type BrowserSerial = { requestPort(): Promise<BrowserSerialPort> };
-type BrowserBluetoothCharacteristic = {
-  startNotifications(): Promise<void>;
-  stopNotifications(): Promise<void>;
-  writeValue(value: BufferSource): Promise<void>;
-  addEventListener(type: "characteristicvaluechanged", listener: (event: Event) => void): void;
-  removeEventListener(type: "characteristicvaluechanged", listener: (event: Event) => void): void;
-};
-type BrowserBluetoothService = { getCharacteristic(uuid: string): Promise<BrowserBluetoothCharacteristic> };
-type BrowserBluetoothServer = { connected: boolean; connect(): Promise<BrowserBluetoothServer>; getPrimaryService(uuid: string): Promise<BrowserBluetoothService>; disconnect(): void };
-type BrowserBluetoothDevice = { gatt?: BrowserBluetoothServer | null; addEventListener(type: "gattserverdisconnected", listener: (event: Event) => void): void; removeEventListener(type: "gattserverdisconnected", listener: (event: Event) => void): void };
-type BrowserBluetoothRequestOptions = { filters: Array<{ services?: string[]; namePrefix?: string }>; optionalServices?: string[] };
-type BrowserBluetooth = { requestDevice(options: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice> };
+type TabId = "overview" | "import" | "sessions" | "tests" | "health" | "training" | "research" | "devices" | "exports" | "settings";
+type ImportStepState = "idle" | "active" | "done" | "error";
+type ChartDensity = "compact" | "comfortable";
 
-const EXPORT_PREFIX = "REFLEX_EXPORT ";
-const EXPORT_COMMAND = "REFLEX_EXPORT_V1";
-const BLE_SERVICE_UUID = "8f4f0001-b0bc-4cf0-a4f2-49e0e6a8c101";
-const BLE_COMMAND_UUID = "8f4f0002-b0bc-4cf0-a4f2-49e0e6a8c101";
-const BLE_DATA_UUID = "8f4f0003-b0bc-4cf0-a4f2-49e0e6a8c101";
+const tabs: { id: TabId; label: string; mobile?: boolean }[] = [
+  { id: "overview", label: "Overview", mobile: true },
+  { id: "import", label: "Import", mobile: true },
+  { id: "sessions", label: "Sessions" },
+  { id: "tests", label: "Tests", mobile: true },
+  { id: "health", label: "Health", mobile: true },
+  { id: "training", label: "Training" },
+  { id: "research", label: "Research" },
+  { id: "devices", label: "Devices" },
+  { id: "exports", label: "Exports" },
+  { id: "settings", label: "Settings" },
+];
 
-const nice = (value: number | undefined, suffix = "") => value === undefined ? "—" : `${Math.round(value)}${suffix}`;
-const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined;
-const standardDeviation = (values: number[]) => {
-  const mean = average(values);
-  return mean === undefined || values.length < 2 ? undefined : Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1));
-};
-const weightedAverage = (items: { value: number | undefined; weight: number }[]) => {
-  const valid = items.filter((item): item is { value: number; weight: number } => item.value !== undefined);
-  const totalWeight = valid.reduce((sum, item) => sum + item.weight, 0);
-  return totalWeight ? valid.reduce((sum, item) => sum + item.value * item.weight, 0) / totalWeight : undefined;
-};
-const labels: Record<TestType, string> = { quick: "Quick", focus: "Focus", choice: "Choice", rhythm: "Rhythm", memory: "Memory" };
-const tableLabels: Record<SortKey, string> = { sequence: "sequence", test_type: "test", score: "score", median: "median", spread: "spread", lapses: "lapses", false_starts: "false starts", attempts: "attempts", correct: "correct", rhythm_bias: "bias/span" };
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-const pad = (value: number) => String(value).padStart(2, "0");
-const today = () => {
-  const now = new Date();
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-};
-const currentTime = () => {
-  const now = new Date();
-  return `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-};
-const automaticContext = () => {
-  const hour = new Date().getHours();
-  if (hour < 5 || hour >= 21) return "bedtime";
-  if (hour < 12) return "morning";
-  if (hour < 17) return "afternoon";
-  return "evening";
-};
-const dateKey = (value: string) => value.slice(0, 10);
-const blankHealthLog = (): HealthLog => ({
-  log_date: today(),
-  log_time: currentTime(),
-  context: automaticContext(),
-  wake_time: "07:00",
-  sleep_hours: 7.5,
-  sleep_quality: 7,
-  stress: 4,
-  mood: 7,
-  exercise_minutes: 20,
-  caffeine_mg: 120,
-  caffeine_recent_mg: 0,
-  hydration: 7,
-  notes: "",
-});
-const blankResearchProfile = (): ResearchProfile => ({ age_years: "", account_age_days: "", gender: "", handedness: "", notes: "" });
-const normalizeResearchProfile = (profile: Partial<ResearchProfile> | null | undefined): ResearchProfile => ({
-  age_years: profile?.age_years ?? "",
-  account_age_days: profile?.account_age_days ?? "",
-  gender: profile?.gender ?? "",
-  handedness: profile?.handedness ?? "",
-  notes: profile?.notes ?? "",
-});
-const memoryTiles = [
-  { id: 0, label: "A", name: "amber" },
-  { id: 1, label: "B", name: "blue" },
-  { id: 2, label: "C", name: "green" },
-  { id: 3, label: "D", name: "rose" },
-] as const;
+const importSteps = [
+  "Connect to nearby badge",
+  "Send REFLEX_EXPORT_V1",
+  "Receive structured history",
+  "Validate export",
+  "Deduplicate sessions",
+  "Import complete",
+];
 
-function createExportAccumulator() {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const frames: unknown[] = [];
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function nowTime() {
+  return new Date().toTimeString().slice(0, 5);
+}
+
+function blankHealthLog(): HealthLog {
   return {
-    push(chunk: Uint8Array) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith(EXPORT_PREFIX)) continue;
-        const frame = JSON.parse(line.slice(EXPORT_PREFIX.length));
-        frames.push(frame);
-        if ((frame as { type?: string }).type === "end") return exportFromFrames(frames);
-      }
-      return null;
-    },
-    flush() {
-      if (!buffer) return null;
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith(EXPORT_PREFIX)) continue;
-        const frame = JSON.parse(line.slice(EXPORT_PREFIX.length));
-        frames.push(frame);
-        if ((frame as { type?: string }).type === "end") return exportFromFrames(frames);
-      }
-      return null;
-    },
+    log_date: today(),
+    log_time: nowTime(),
+    context: "check-in",
+    wake_time: "07:00",
+    sleep_hours: 7.4,
+    sleep_quality: 7,
+    stress: 4,
+    mood: 7,
+    exercise_minutes: 20,
+    caffeine_mg: 120,
+    caffeine_recent_mg: 0,
+    hydration: 7,
+    notes: "",
   };
 }
 
-function transportErrorMessage(kind: "bluetooth" | "serial", error: unknown) {
-  const fallback = kind === "bluetooth" ? "Bluetooth import failed. Use the export file upload instead." : "Serial import failed. Use the export file upload instead.";
-  if (!(error instanceof Error)) return fallback;
-  const message = error.message.toLowerCase();
-  if (error.name === "AbortError") return kind === "bluetooth" ? "No Bluetooth device was selected." : "No serial port was selected.";
-  if (error.name === "NotFoundError") return kind === "bluetooth" ? "No matching Bluetooth badge was found. Make sure the badge is powered on and nearby." : "No matching serial port was found. Plug in the badge and try again.";
-  if (error.name === "NotAllowedError") return kind === "bluetooth" ? "Chrome blocked Bluetooth access. Reopen the browser prompt and allow the badge." : "Chrome blocked serial access. Reopen the browser prompt and allow the badge.";
-  if (message.includes("failed to open serial port") || message.includes("networkerror") || message.includes("invalidstateerror")) {
-    return kind === "bluetooth"
-      ? "Could not connect to the badge over Bluetooth. Keep the badge nearby, turn Bluetooth on, and retry. You can always use export file upload instead."
-      : "Could not open the badge serial port. Make sure the badge is connected, close any serial monitor using the port, and retry. You can always use export file upload instead.";
-  }
-  return `${kind === "bluetooth" ? "Bluetooth" : "Serial"} import failed: ${error.message}. Use the export file upload instead.`;
+function classNames(...names: Array<string | false | undefined>) {
+  return names.filter(Boolean).join(" ");
 }
 
-function MetricCard({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <section className="metric-card"><p>{label}</p><strong>{value}</strong><span>{detail}</span></section>;
+function formatMetric(value: number, suffix = "") {
+  if (!Number.isFinite(value)) return "—";
+  return `${Math.round(value)}${suffix}`;
 }
 
-function LineChart({ title, values, color, suffix = "" }: { title: string; values: { sequence: number; value: number }[]; color: string; suffix?: string }) {
-  const width = 600, height = 180, pad = 18;
-  const valid = values.filter((point) => Number.isFinite(point.value));
-  const min = Math.min(...valid.map((point) => point.value), 0);
-  const max = Math.max(...valid.map((point) => point.value), 1);
+function downloadFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function escapeCsv(value: string | number | undefined) {
+  const text = String(value ?? "");
+  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function sessionsToCsv(sessions: DashboardSession[], healthLogs: HealthLog[]) {
+  const healthByDay = new Map(healthLogs.map((log) => [log.log_date, log]));
+  const columns = ["timestamp", "badge_id", "firmware_version", "test_type", "score", "median_ms", "spread_ms", "lapses", "false_starts", "accuracy", "matched_sleep_hours", "matched_stress", "matched_caffeine_mg", "matched_hydration"];
+  const rows = sessions.map((session) => {
+    const day = (session.timestamp ?? session.imported_at).slice(0, 10);
+    const health = healthByDay.get(day);
+    const accuracy = session.test_type === "choice" ? Math.round((session.correct / Math.max(1, session.attempts)) * 100) : "";
+    return [session.timestamp ?? session.imported_at, session.badge_id, session.firmware_version, session.test_type, session.score, session.median, session.spread, session.lapses, session.false_starts, accuracy, health?.sleep_hours, health?.stress, health?.caffeine_mg, health?.hydration];
+  });
+  return [columns, ...rows].map((row) => row.map(escapeCsv).join(",")).join("\n");
+}
+
+function MiniLineChart({ title, points, suffix = "", band = false }: { title: string; points: TrendPoint[]; suffix?: string; band?: boolean }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const width = 640;
+  const height = 210;
+  const pad = 24;
+  const values = points.filter((point) => Number.isFinite(point.value));
+  const allValues = values.flatMap((point) => [point.value, point.low ?? point.value, point.high ?? point.value]);
+  const min = Math.min(...allValues, 0);
+  const max = Math.max(...allValues, 100);
   const range = max - min || 1;
-  const points = valid.map((point, index) => {
-    const x = pad + (valid.length < 2 ? (width - pad * 2) / 2 : index * (width - pad * 2) / (valid.length - 1));
-    const y = height - pad - ((point.value - min) / range) * (height - pad * 2);
+  const xy = (point: TrendPoint, index: number, key: "value" | "low" | "high" = "value") => {
+    const value = point[key] ?? point.value;
+    const x = pad + (values.length <= 1 ? (width - pad * 2) / 2 : index * (width - pad * 2) / (values.length - 1));
+    const y = height - pad - ((value - min) / range) * (height - pad * 2);
     return `${x},${y}`;
-  }).join(" ");
-  return <section className="chart"><div className="chart-heading"><h2>{title}</h2><span>{valid.length ? `${nice(min, suffix)}–${nice(max, suffix)}` : "No data"}</span></div>
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title} ordered by session number`}>
-      <line x1={pad} x2={width - pad} y1={height - pad} y2={height - pad} className="axis" />
-      {points && <polyline points={points} fill="none" stroke={color} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />}
-    </svg>
-  </section>;
+  };
+  const line = values.map((point, index) => xy(point, index)).join(" ");
+  const bandPolygon = band && values.length > 1
+    ? `${values.map((point, index) => xy(point, index, "high")).join(" ")} ${values.map((point, index) => xy(point, index, "low")).reverse().join(" ")}`
+    : "";
+  const plotted = values.map((point, index) => {
+    const [x, y] = xy(point, index).split(",").map(Number);
+    const [, lowY] = xy(point, index, "low").split(",").map(Number);
+    const [, highY] = xy(point, index, "high").split(",").map(Number);
+    return { point, x, y, lowY, highY };
+  });
+  const selected = hoveredIndex === null ? plotted.at(-1) : plotted[hoveredIndex];
+  function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
+    if (!plotted.length) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const cursorX = ((event.clientX - bounds.left) / bounds.width) * width;
+    const nearest = plotted.reduce((best, item, index) => Math.abs(item.x - cursorX) < Math.abs(plotted[best].x - cursorX) ? index : best, 0);
+    setHoveredIndex(nearest);
+  }
+  return (
+    <section className="chart-card" aria-label={title}>
+      <div className="chart-head">
+        <h3>{title}</h3>
+        <span>{selected ? `${selected.point.label}: ${formatMetric(selected.point.value, suffix)}` : values.length ? `${formatMetric(min, suffix)}–${formatMetric(max, suffix)}` : "No chart data"}</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title} trend`} onPointerMove={handlePointerMove} onPointerLeave={() => setHoveredIndex(null)}>
+        <line x1={pad} x2={width - pad} y1={height - pad} y2={height - pad} className="chart-axis" />
+        {bandPolygon ? <polygon points={bandPolygon} className="chart-band" /> : null}
+        {line ? <polyline points={line} className="chart-line" /> : null}
+        {selected ? (
+          <g className="chart-cursor">
+            <line x1={selected.x} x2={selected.x} y1={pad} y2={height - pad} />
+            {band && <line x1={selected.x - 8} x2={selected.x + 8} y1={selected.highY} y2={selected.highY} />}
+            {band && <line x1={selected.x - 8} x2={selected.x + 8} y1={selected.lowY} y2={selected.lowY} />}
+            <circle cx={selected.x} cy={selected.y} r="7" />
+          </g>
+        ) : null}
+        {plotted.map(({ point, x, y }, index) => <circle key={`${point.label}-${index}`} cx={x} cy={y} r="3.5" className="chart-dot" tabIndex={0} onFocus={() => setHoveredIndex(index)} />)}
+        <rect x={pad} y={pad} width={width - pad * 2} height={height - pad * 2} className="chart-hit" />
+      </svg>
+      <div className="chart-readout" aria-live="polite">
+        {selected ? <><strong>{selected.point.label}</strong><span>{formatMetric(selected.point.value, suffix)}</span>{band && selected.point.low !== undefined && selected.point.high !== undefined ? <small>range {formatMetric(selected.point.low, suffix)} to {formatMetric(selected.point.high, suffix)}</small> : null}</> : <span>Move over the chart to inspect values.</span>}
+      </div>
+    </section>
+  );
 }
 
-function pearson(pairs: { x: number; y: number }[]) {
-  if (pairs.length < 4) return undefined;
-  const xMean = average(pairs.map((point) => point.x)) ?? 0;
-  const yMean = average(pairs.map((point) => point.y)) ?? 0;
-  const numerator = pairs.reduce((sum, point) => sum + (point.x - xMean) * (point.y - yMean), 0);
-  const xVariance = pairs.reduce((sum, point) => sum + (point.x - xMean) ** 2, 0);
-  const yVariance = pairs.reduce((sum, point) => sum + (point.y - yMean) ** 2, 0);
-  const denominator = Math.sqrt(xVariance * yVariance);
-  return denominator ? numerator / denominator : undefined;
+function MiniBarChart({ title, points, suffix = "" }: { title: string; points: TrendPoint[]; suffix?: string }) {
+  const max = Math.max(1, ...points.map((point) => point.value));
+  return (
+    <section className="chart-card">
+      <div className="chart-head">
+        <h3>{title}</h3>
+        <span>{points.length ? `${points.length} groups` : "No chart data"}</span>
+      </div>
+      <div className="bar-chart">
+        {points.map((point) => (
+          <div key={point.label} className="bar-row">
+            <span>{point.label}</span>
+            <div><i style={{ width: `${Math.max(4, point.value / max * 100)}%` }} /></div>
+            <strong>{formatMetric(point.value, suffix)}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
-function CorrelationRow({ label, value, detail }: { label: string; value: number | undefined; detail: string }) {
-  const strength = value === undefined ? "Not enough overlap" : Math.abs(value) >= .45 ? "Strong signal" : Math.abs(value) >= .25 ? "Possible signal" : "Weak signal";
-  return <article><strong>{label}</strong><span>{value === undefined ? "—" : value.toFixed(2)}</span><p>{strength}. {detail}</p></article>;
+function MetricCard({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: "neutral" | "good" | "warn" }) {
+  return (
+    <article className={classNames("metric-card", tone)}>
+      <p>{label}</p>
+      <strong>{value}</strong>
+      <span>{detail}</span>
+    </article>
+  );
 }
 
-function ModelFactor({ label, value, detail }: { label: string; value: number | undefined; detail: string }) {
-  return <article><div><strong>{label}</strong><span>{nice(value)}</span></div><meter min="0" max="100" value={value ?? 0} /><p>{detail}</p></article>;
+function EmptyState({ title, detail, actions }: { title: string; detail: string; actions?: ReactNode }) {
+  return (
+    <section className="empty-state">
+      <h3>{title}</h3>
+      <p>{detail}</p>
+      {actions ? <div className="action-row">{actions}</div> : null}
+    </section>
+  );
+}
+
+function TabIcon({ id }: { id: TabId | "more" }) {
+  const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (id === "overview") return <svg {...common}><path d="M4 13h6V4H4z" /><path d="M14 20h6V4h-6z" /><path d="M4 20h6v-3H4z" /></svg>;
+  if (id === "import") return <svg {...common}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>;
+  if (id === "tests") return <svg {...common}><path d="M9 3h6" /><path d="M10 9h4" /><path d="M8 21h8" /><path d="M12 3v6" /><path d="M7 9h10l-1 12H8z" /></svg>;
+  if (id === "health") return <svg {...common}><path d="M20 11c0 5-8 10-8 10S4 16 4 11a4 4 0 0 1 7-2.65A4 4 0 0 1 20 11Z" /></svg>;
+  if (id === "more") return <svg {...common}><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
+  return <svg {...common}><path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-6" /></svg>;
+}
+
+function AppNav({ activeTab, onTabChange }: { activeTab: TabId; onTabChange: (tab: TabId) => void }) {
+  return (
+    <>
+      <aside className="sidebar">
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 42 42" role="img">
+              <circle cx="21" cy="21" r="15" />
+              <path d="M8 22h7l3-8 6 15 3-7h7" />
+              <path d="M27 11c4 1.9 6.8 5.7 7.4 10.2" />
+            </svg>
+          </div>
+          <div>
+            <strong>Reflex Console</strong>
+            <span>Badge performance dashboard</span>
+          </div>
+        </div>
+        <nav aria-label="Dashboard tabs">
+          {tabs.map((tab) => (
+            <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => onTabChange(tab.id)} type="button">
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+      <nav className="mobile-nav" aria-label="Mobile dashboard tabs">
+        {tabs.filter((tab) => tab.mobile).map((tab) => (
+          <button key={tab.id} aria-label={tab.label} title={tab.label} className={activeTab === tab.id ? "active" : ""} onClick={() => onTabChange(tab.id)} type="button">
+            <TabIcon id={tab.id} />
+          </button>
+        ))}
+        <button aria-label="More" title="More" className={!tabs.find((tab) => tab.id === activeTab)?.mobile ? "active" : ""} onClick={() => onTabChange("training")} type="button"><TabIcon id="more" /></button>
+      </nav>
+    </>
+  );
+}
+
+function SignedOutIntro({ onTryDemo }: { onTryDemo: () => void }) {
+  return (
+    <main className="signed-out">
+      <section className="intro-panel">
+        <p className="eyebrow">REFLEX CONSOLE</p>
+        <h1>Private badge-session analytics for cognitive-performance training.</h1>
+        <p>Import ESP32 badge session history, review personal performance trends, and optionally contribute pseudonymous aggregate research rows. Reflex Console is a non-medical wellness tool.</p>
+        <div className="action-row">
+          <button onClick={onTryDemo} type="button">Try Demo Mode</button>
+          <SignInButton><button className="secondary" type="button">Sign In</button></SignInButton>
+          <SignUpButton><button className="secondary" type="button">Create Account</button></SignUpButton>
+        </div>
+      </section>
+      <section className="intro-grid">
+        <MetricCard label="Import paths" value="BLE + JSON" detail="Bluetooth LE command REFLEX_EXPORT_V1 or export-file upload fallback." />
+        <MetricCard label="Privacy model" value="User scoped" detail="Research contribution is optional and pseudonymous." />
+        <MetricCard label="Product scope" value="Wellness" detail="Personal performance trends without medical claims." />
+      </section>
+    </main>
+  );
+}
+
+function OverviewTab({ sessions, healthLogs, imports, suggestions }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; imports: ImportBatch[]; suggestions: TrainingSuggestion[] }) {
+  const readiness = buildReadiness(sessions, healthLogs);
+  const metrics = todayVsBaseline(sessions);
+  const latestImport = imports[0];
+  const quality = dataQualityFlags(sessions, healthLogs);
+  const changed = contributors(sessions, healthLogs);
+  const next = suggestions[0];
+  return (
+    <div className="tab-stack">
+      <section className="overview-hero">
+        <article className="readiness-card">
+          <div>
+            <p className="eyebrow">Performance Readiness</p>
+            <h2>{readiness.score}</h2>
+            <p>{readiness.confidence} data confidence · {readiness.low}–{readiness.high} estimated range</p>
+            <span className={readiness.comparedToBaseline >= 0 ? "pill good" : "pill warn"}>
+              {readiness.comparedToBaseline >= 0 ? "+" : ""}{readiness.comparedToBaseline} vs personal baseline
+            </span>
+          </div>
+          <div className="readiness-ring" style={{ "--ready": `${readiness.score}%` } as CSSProperties}>
+            <div className="readiness-ring-inner"><strong>{readiness.score}</strong><span>{readiness.confidence}</span></div>
+          </div>
+          <p className="span-full">{readiness.explanation}</p>
+        </article>
+        <article className="suggestion-card">
+          <p className="eyebrow">Suggested Next Session</p>
+          <h2>{next?.suggestedAction ?? "Collect another badge session"}</h2>
+          <p><strong>Reason:</strong> {next?.signal ?? "Not enough recent data"}</p>
+          <p><strong>Goal:</strong> {next?.goal ?? "Improve baseline confidence."}</p>
+          <p><strong>Evidence:</strong> {next?.evidence ?? "Import badge sessions to unlock recommendations."}</p>
+        </article>
+      </section>
+      <section className="metric-grid compact">
+        {metrics.map((metric) => <MetricCard key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />)}
+      </section>
+      <section className="overview-grid">
+        <article className="panel">
+          <div className="panel-head"><div><h2>Import Status</h2><p>Latest retained badge history and import health.</p></div><span className={classNames("status-dot", latestImport && "good")}>{latestImport ? "Healthy" : "No import"}</span></div>
+          <dl className="detail-list">
+            <div><dt>Last import</dt><dd>{formatDateTime(latestImport?.imported_at)}</dd></div>
+            <div><dt>Last badge ID</dt><dd>{latestImport?.badge_id ?? "—"}</dd></div>
+            <div><dt>Firmware</dt><dd>{latestImport?.firmware_version ?? "—"}</dd></div>
+            <div><dt>History retained</dt><dd>{latestImport ? `${latestImport.retained_sessions} / ${latestImport.history_capacity}` : "—"}</dd></div>
+          </dl>
+        </article>
+        <article className="panel">
+          <div className="panel-head"><div><h2>What Changed</h2><p>Ranked contributors to recent performance change.</p></div></div>
+          {changed.length ? <div className="rank-list">
+            {changed.slice(0, 6).map((item) => <div key={item.label}><span>{item.impact >= 0 ? "+" : ""}{item.impact}</span><strong>{item.label}</strong><p>{item.detail}</p></div>)}
+          </div> : <EmptyState title="Not enough data" detail="Import badge sessions before comparing recent performance with your personal baseline." />}
+        </article>
+        <article className="panel">
+          <div className="panel-head"><div><h2>Data Quality</h2><p>Issues that limit interpretation.</p></div></div>
+          <div className="quality-list">
+            {quality.map((flag) => <div key={flag.label} className={flag.severity}><strong>{flag.label}</strong><p>{flag.detail}</p></div>)}
+          </div>
+        </article>
+      </section>
+      <section className="chart-grid">
+        <MiniLineChart title="Readiness timeline with confidence band" points={readinessTimeline(sessions)} band />
+        <MiniBarChart title="Score trends by test type" points={scoreTrendsByType(sessions).map((point) => ({ ...point, label: TEST_LABELS[point.label as TestType] }))} />
+        <MiniLineChart title="Reaction-time trend" points={trendByType(sessions, "quick", "metric")} suffix=" ms" />
+        <MiniLineChart title="Lapse trend" points={trendByType(sessions, "focus", "lapses")} />
+      </section>
+      <LatestSessions sessions={sessions.slice(0, 8)} />
+      <Disclaimer />
+    </div>
+  );
+}
+
+function LatestSessions({ sessions }: { sessions: DashboardSession[] }) {
+  return (
+    <section className="panel">
+      <div className="panel-head"><div><h2>Latest Sessions Preview</h2><p>Recent imported badge sessions.</p></div></div>
+      {!sessions.length ? <EmptyState title="No sessions to show" detail="Imported badge sessions will appear here with test type, score, key metric, and badge ID." /> : <div className="mini-table">
+        <table>
+          <thead><tr><th>Test</th><th>Time</th><th>Score</th><th>Key metric</th><th>Badge</th></tr></thead>
+          <tbody>
+            {sessions.map((session) => <tr key={`${session.badge_id}-${session.sequence}`}><td>{TEST_LABELS[session.test_type]}</td><td>{formatDateTime(session.timestamp)}</td><td>{session.score}</td><td>{metricForSession(session)}{metricSuffix(session.test_type)}</td><td>{session.badge_id}</td></tr>)}
+          </tbody>
+        </table>
+      </div>}
+    </section>
+  );
+}
+
+function ImportTab({ sessions, onImportExport }: { sessions: DashboardSession[]; onImportExport: (payload: ReflexExport) => void }) {
+  const [step, setStep] = useState(0);
+  const [status, setStatus] = useState<ImportStepState>("idle");
+  const [message, setMessage] = useState("Ready to connect over Bluetooth LE.");
+  const [uploadMessage, setUploadMessage] = useState("No file selected.");
+  const [preview, setPreview] = useState<ReturnType<typeof previewImportPayload> | null>(null);
+
+  async function submitImport(exportData: ReflexExport, source: "badge" | "file") {
+    const previewResult = previewImportPayload(exportData, sessions);
+    if (!previewResult.ok || !previewResult.exportData) {
+      throw new Error(previewResult.error ?? "Invalid export schema");
+    }
+
+    setStatus("active");
+    setStep(3);
+    setMessage("Validating export schema...");
+    const response = await fetch("/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(previewResult.exportData),
+    });
+    const result = await response.json() as { imported?: number; duplicates?: number; badgeId?: string; error?: string };
+    if (!response.ok) throw new Error(result.error ?? "Import failed");
+
+    const imported = result.imported ?? previewResult.newCount ?? 0;
+    const duplicates = result.duplicates ?? previewResult.duplicateCount ?? 0;
+    setStep(5);
+    setStatus("done");
+    setMessage(`${imported} new sessions imported. ${duplicates} duplicate sessions skipped. Badge ${result.badgeId ?? previewResult.badgeId} · Firmware ${previewResult.firmwareVersion} · History retained ${previewResult.sessionCount} / ${previewResult.exportData.begin.history_capacity}.`);
+    setUploadMessage(source === "badge" ? "Badge import complete." : "JSON import complete.");
+    onImportExport(previewResult.exportData);
+  }
+
+  async function connectBadgeImport() {
+    try {
+      setStatus("active");
+      setStep(0);
+      setMessage(importSteps[0]);
+      const exportData = await readBadgeExport((progress) => {
+        setStatus("active");
+        setStep(progress.step);
+        setMessage(progress.message);
+      });
+      await submitImport(exportData, "badge");
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "Badge import failed");
+    }
+  }
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const result = previewImportPayload(text, sessions);
+      setPreview(result);
+      setUploadMessage(result.ok ? `${result.newCount} new sessions, ${result.duplicateCount} duplicates detected.` : result.error ?? "Invalid export schema");
+    } catch (error) {
+      setPreview({ ok: false, error: error instanceof Error ? error.message : "JSON schema validation error: file could not be parsed." });
+      setUploadMessage("JSON schema validation error: file could not be parsed.");
+    }
+  }
+
+  return (
+    <div className="tab-stack">
+      <section className="two-column">
+        <article className="panel import-card">
+          <div className="panel-head"><div><h2>Bluetooth LE Import</h2><p>Connect to a nearby badge and request structured history.</p></div><span className="pill">Primary</span></div>
+          <button type="button" onClick={connectBadgeImport}>Connect Badge</button>
+          <div className="import-flow">
+            {importSteps.map((label, index) => (
+              <div key={label} className={classNames(index < step || status === "done" ? "done" : index === step && status === "active" ? "active" : "", status === "error" && index === step ? "error" : "")}>
+                <span>{index + 1}</span><p>{label}</p>
+              </div>
+            ))}
+          </div>
+          <div className={classNames("notice", status === "done" && "good", status === "error" && "error")}>{message}</div>
+          {status === "error" ? (
+            <div className="error-grid"><span>{message}</span></div>
+          ) : null}
+        </article>
+        <article className="panel import-card">
+          <div className="panel-head"><div><h2>JSON Upload Fallback</h2><p>Upload a structured badge export file and preview records before import.</p></div><span className="pill subtle">Fallback</span></div>
+          <label className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+            event.preventDefault();
+            const file = event.dataTransfer.files[0];
+            if (!file) return;
+            file.text().then((text) => {
+              const result = previewImportPayload(text, sessions);
+              setPreview(result);
+              setUploadMessage(result.ok ? `${result.newCount} new sessions, ${result.duplicateCount} duplicates detected.` : result.error ?? "Invalid export schema");
+            }).catch(() => {
+              setPreview({ ok: false, error: "JSON schema validation error: file could not be parsed." });
+              setUploadMessage("JSON schema validation error: file could not be parsed.");
+            });
+          }}>
+            <input type="file" accept="application/json,.json" onChange={handleFile} />
+            <strong>Upload JSON Export</strong>
+            <span>Drag-and-drop styling with schema validation and duplicate detection.</span>
+          </label>
+          <div className="notice">{uploadMessage}</div>
+          {preview?.ok ? (
+            <div className="preview-box">
+              <dl className="detail-list">
+                <div><dt>Badge</dt><dd>{preview.badgeId}</dd></div>
+                <div><dt>Firmware</dt><dd>{preview.firmwareVersion}</dd></div>
+                <div><dt>Records</dt><dd>{preview.sessionCount}</dd></div>
+                <div><dt>Import result</dt><dd>{preview.newCount} new · {preview.duplicateCount} duplicate</dd></div>
+              </dl>
+              <button type="button" onClick={() => preview.exportData ? submitImport(preview.exportData, "file").catch((error) => { setStatus("error"); setUploadMessage(error instanceof Error ? error.message : "Import failed"); }) : null}>Import Valid Records</button>
+            </div>
+          ) : preview ? <div className="notice error">{preview.error}</div> : null}
+        </article>
+      </section>
+    </div>
+  );
+}
+
+function SessionsTab({ sessions }: { sessions: DashboardSession[] }) {
+  const [query, setQuery] = useState("");
+  const [type, setType] = useState<"all" | TestType>("all");
+  const [badge, setBadge] = useState("all");
+  const [firmware, setFirmware] = useState("all");
+  const [sortKey, setSortKey] = useState<"timestamp" | "score" | "metric">("timestamp");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const badges = [...new Set(sessions.map((session) => session.badge_id))];
+  const firmwares = [...new Set(sessions.map((session) => session.firmware_version ?? "unknown"))];
+  const filtered = sessions.filter((session) => {
+    const text = `${session.badge_id} ${session.sequence} ${TEST_LABELS[session.test_type]} ${session.firmware_version}`.toLowerCase();
+    return text.includes(query.toLowerCase()) && (type === "all" || session.test_type === type) && (badge === "all" || session.badge_id === badge) && (firmware === "all" || session.firmware_version === firmware);
+  }).sort((a, b) => {
+    if (sortKey === "score") return b.score - a.score;
+    if (sortKey === "metric") return metricForSession(a) - metricForSession(b);
+    return new Date(b.timestamp ?? b.imported_at).getTime() - new Date(a.timestamp ?? a.imported_at).getTime();
+  });
+  return (
+    <div className="tab-stack">
+      <section className="panel">
+        <div className="panel-head"><div><h2>Session History</h2><p>Search, filter, sort, and inspect retained badge sessions.</p></div><span className="pill">{filtered.length} rows</span></div>
+        <div className="filter-bar">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search sessions" />
+          <select value={type} onChange={(event) => setType(event.target.value as "all" | TestType)}><option value="all">All tests</option>{TEST_TYPES.map((item) => <option key={item} value={item}>{TEST_LABELS[item]}</option>)}</select>
+          <select value={badge} onChange={(event) => setBadge(event.target.value)}><option value="all">All badges</option>{badges.map((item) => <option key={item}>{item}</option>)}</select>
+          <select value={firmware} onChange={(event) => setFirmware(event.target.value)}><option value="all">All firmware</option>{firmwares.map((item) => <option key={item}>{item}</option>)}</select>
+          <select value={sortKey} onChange={(event) => setSortKey(event.target.value as "timestamp" | "score" | "metric")}><option value="timestamp">Sort by timestamp</option><option value="score">Sort by score</option><option value="metric">Sort by metric</option></select>
+        </div>
+        {!sessions.length ? <EmptyState title="No badge sessions yet" detail="Connect your badge over Bluetooth or upload a JSON export to start reviewing performance trends." /> : null}
+        {sessions.length && !filtered.length ? <EmptyState title="No matching sessions" detail="Adjust search, test type, badge, firmware, or sort filters to find retained sessions." /> : null}
+        {filtered.length ? <div className="mini-table large">
+          <table>
+            <thead><tr><th>Time</th><th>Test</th><th>Badge</th><th>Firmware</th><th>Score</th><th>Metric</th><th>Lapses</th><th>False starts</th><th>Actions</th></tr></thead>
+            <tbody>
+              {filtered.map((session) => {
+                const key = `${session.badge_id}-${session.sequence}`;
+                return (
+                  <Fragment key={key}>
+                    <tr key={key}>
+                      <td>{formatDateTime(session.timestamp)}</td><td>{TEST_LABELS[session.test_type]}</td><td>{session.badge_id}</td><td>{session.firmware_version}</td><td>{session.score}</td><td>{metricForSession(session)}{metricSuffix(session.test_type)}</td><td>{session.lapses}</td><td>{session.false_starts}</td>
+                      <td><button className="compact-button" type="button" onClick={() => setExpanded(expanded === key ? null : key)}>Details</button></td>
+                    </tr>
+                    {expanded === key ? <tr key={`${key}-detail`} className="detail-row"><td colSpan={9}><code>{JSON.stringify(session, null, 2)}</code></td></tr> : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div> : null}
+      </section>
+    </div>
+  );
+}
+
+function TestsTab({ sessions }: { sessions: DashboardSession[] }) {
+  const [mode, setMode] = useState<TestType>("quick");
+  const summary = summarizeTestMode(sessions, mode);
+  const label = TEST_LABELS[mode];
+  const metric = metricLabel(mode);
+  if (!sessions.length) return <EmptyState title="No test data yet" detail="Import badge sessions or enable Demo Mode in Settings before reviewing test drilldowns." />;
+  return (
+    <div className="tab-stack">
+      <section className="segmented" aria-label="Test mode tabs">
+        {TEST_TYPES.map((type) => <button key={type} className={mode === type ? "active" : ""} onClick={() => setMode(type)} type="button">{TEST_LABELS[type]}</button>)}
+      </section>
+      <section className="metric-grid">
+        <MetricCard label="Latest score" value={formatMetric(summary.latestScore)} detail={`${label} most recent session`} />
+        <MetricCard label="Best score" value={formatMetric(summary.bestScore)} detail="Personal best in retained history" tone="good" />
+        <MetricCard label="7-day trend" value={`${summary.trend7 >= 0 ? "+" : ""}${summary.trend7.toFixed(1)}`} detail="Score vs baseline" />
+        <MetricCard label="30-day trend" value={`${summary.trend30 >= 0 ? "+" : ""}${summary.trend30.toFixed(1)}`} detail="Score vs baseline" />
+        <MetricCard label="Baseline comparison" value={formatMetric(summary.latestMetric - summary.baselineMetric, metricSuffix(mode))} detail={`${metric} vs baseline`} />
+      </section>
+      <section className="chart-grid">
+        <MiniLineChart title={`${label} score trend`} points={trendByType(sessions, mode, "score")} />
+        <MiniLineChart title={`${metric} trend`} points={trendByType(sessions, mode, "metric")} suffix={metricSuffix(mode)} />
+        <MiniLineChart title={`${label} lapses over time`} points={trendByType(sessions, mode, "lapses")} />
+        <MiniLineChart title={`${label} false starts trend`} points={trendByType(sessions, mode, "false_starts")} />
+      </section>
+      <section className="two-column">
+        <article className="panel">
+          <h2>Metric Explanation</h2>
+          <p>{testExplanation(mode)}</p>
+          <p className="soft-note">{summary.modeSessions.length < 5 ? `Data-quality note: ${label} confidence is limited because fewer than 5 retained sessions are available.` : `Data-quality note: ${label} has enough retained demo sessions for a useful personal trend view.`}</p>
+        </article>
+        <LatestSessions sessions={summary.modeSessions.slice(0, 8)} />
+      </section>
+    </div>
+  );
+}
+
+function testExplanation(mode: TestType) {
+  const copy: Record<TestType, string> = {
+    quick: "Quick Test tracks simple reaction time, spread/consistency, lapses, false starts, readiness score, personal best, and baseline median/spread.",
+    focus: "Focus Test tracks repeated reaction performance over timed sessions, emphasizing median reaction time, lapses, consistency, and score stability.",
+    choice: "Choice Test maps blue to Back/left and red to Select/right, balancing accuracy, attempts, median response time, false starts, and score.",
+    rhythm: "Rhythm Test tracks tap timing against repeated flashes, including median timing error, rhythm bias, matched tap count, and score.",
+    memory: "Memory Test tracks visual sequence recall, attempts, correct responses, recall timing, mistakes, best completed span, and score.",
+  };
+  return copy[mode];
+}
+
+function HealthTab({ sessions, healthLogs, onAddHealthLog }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; onAddHealthLog: (log: HealthLog) => void }) {
+  const [form, setForm] = useState<HealthLog>(() => blankHealthLog());
+  const todayLogs = healthLogs.filter((log) => log.log_date === today());
+  const matchedSessions = sessions.filter((session) => healthLogs.some((log) => log.log_date === (session.timestamp ?? session.imported_at).slice(0, 10))).slice(0, 8);
+  const sleep = correlation(healthLogs.map((log) => log.sleep_hours), healthLogs.map((log) => 80 + log.sleep_quality - log.stress));
+  const stress = correlation(healthLogs.map((log) => log.stress), healthLogs.map((_, index) => sessions[index]?.lapses ?? 0));
+  const caffeine = correlation(healthLogs.map((log) => log.caffeine_mg), healthLogs.map((_, index) => sessions[index]?.median ?? 0));
+  const hydration = correlation(healthLogs.map((log) => log.hydration), healthLogs.map((_, index) => sessions[index]?.spread ?? 0));
+  function update<K extends keyof HealthLog>(key: K, value: HealthLog[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const sameDayRecent = healthLogs.filter((log) => log.log_date === form.log_date).reduce((sum, log) => sum + log.caffeine_recent_mg, 0) + form.caffeine_recent_mg;
+    onAddHealthLog({ ...form, id: Date.now(), caffeine_mg: Math.max(form.caffeine_mg, sameDayRecent), created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    setForm(blankHealthLog());
+  }
+  return (
+    <div className="tab-stack">
+      <section className="two-column">
+        <article className="panel">
+          <h2>Today’s Context</h2>
+          {todayLogs.length ? <div className="quality-list">{todayLogs.map((log) => <div key={log.id ?? log.log_time}><strong>{log.context} · {log.log_time}</strong><p>{log.sleep_hours}h sleep · stress {log.stress}/10 · caffeine {log.caffeine_mg} mg · hydration {log.hydration}/10</p></div>)}</div> : <EmptyState title="No health context" detail="No health context has been logged today. Add sleep, stress, caffeine, hydration, and mood context to compare performance under different conditions." />}
+        </article>
+        <form className="panel form-panel" onSubmit={submit}>
+          <div className="panel-head"><div><h2>Add Check-In</h2><p>Health context is website-only and matched to same-day badge sessions.</p></div></div>
+          <div className="form-grid">
+            <label>Date<input type="date" value={form.log_date} onChange={(event) => update("log_date", event.target.value)} /></label>
+            <label>Time<input type="time" value={form.log_time} onChange={(event) => update("log_time", event.target.value)} /></label>
+            <label>Wake time<input type="time" value={form.wake_time} onChange={(event) => update("wake_time", event.target.value)} /></label>
+            <label>Context<select value={form.context} onChange={(event) => update("context", event.target.value)}><option>morning</option><option>afternoon</option><option>evening</option><option>check-in</option></select></label>
+            {(["sleep_hours", "sleep_quality", "stress", "mood", "exercise_minutes", "caffeine_mg", "caffeine_recent_mg", "hydration"] as const).map((field) => (
+              <label key={field}>{field.replaceAll("_", " ")}<input type="number" value={form[field]} onChange={(event) => update(field, Number(event.target.value))} /></label>
+            ))}
+          </div>
+          <label className="full-label">Notes<textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} /></label>
+          <button type="submit">Add Check-In</button>
+        </form>
+      </section>
+      <section className="chart-grid">
+        <MiniBarChart title="Sleep vs readiness · exploratory correlation" points={[{ label: "r", value: Math.round(Math.abs(sleep) * 100) }]} />
+        <MiniBarChart title="Stress vs lapses · exploratory correlation" points={[{ label: "r", value: Math.round(Math.abs(stress) * 100) }]} />
+        <MiniBarChart title="Caffeine vs reaction time · exploratory correlation" points={[{ label: "r", value: Math.round(Math.abs(caffeine) * 100) }]} />
+        <MiniBarChart title="Hydration vs consistency · exploratory correlation" points={[{ label: "r", value: Math.round(Math.abs(hydration) * 100) }]} />
+      </section>
+      <section className="two-column">
+        <LatestSessions sessions={matchedSessions} />
+        <article className="panel"><h2>Timeline of Check-Ins</h2><div className="quality-list">{healthLogs.slice(0, 10).map((log) => <div key={`${log.id}-${log.log_time}`}><strong>{log.log_date} · {log.context}</strong><p>{log.sleep_hours}h sleep · mood {log.mood}/10 · recent caffeine {log.caffeine_recent_mg} mg</p></div>)}</div></article>
+      </section>
+      <p className="soft-note">Correlations are exploratory and not causal.</p>
+    </div>
+  );
+}
+
+function TrainingTab({ suggestions }: { suggestions: TrainingSuggestion[] }) {
+  if (!suggestions.length) return <EmptyState title="No training suggestion yet" detail="Import enough recent badge sessions to generate evidence-based training suggestions." />;
+  return (
+    <div className="tab-stack">
+      <section className="panel">
+        <div className="panel-head"><div><h2>Evidence-Based Training Suggestions</h2><p>Deterministic rule-based recommendations from recent training signals.</p></div></div>
+        <div className="suggestion-list">
+          {suggestions.map((suggestion) => (
+            <article key={`${suggestion.signal}-${suggestion.suggestedAction}`}>
+              <span className="pill">{suggestion.confidence}</span>
+              <h3>{suggestion.suggestedAction}</h3>
+              <p><strong>Signal:</strong> {suggestion.signal}</p>
+              <p><strong>Evidence:</strong> {suggestion.evidence}</p>
+              <p><strong>Goal:</strong> {suggestion.goal}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="overview-grid">
+        <MetricCard label="Training streak" value={`${Math.min(7, suggestions.length + 1)} days`} detail="Estimated from retained recent sessions" />
+        <MetricCard label="Weekly balance" value={suggestions.some((suggestion) => suggestion.testType === "context") ? "Context first" : "Active"} detail="Rule-based balance from available signals" />
+        <MetricCard label="Recent outcomes" value={`${suggestions.filter((suggestion) => suggestion.confidence !== "Limited").length} supported`} detail="Suggestions with moderate or strong confidence" />
+      </section>
+      <section className="calendar-grid">{Array.from({ length: 28 }, (_, index) => <span key={index} className={index % 6 === 0 ? "light" : "filled"} />)}</section>
+      <p className="soft-note">Optional AI summaries are disabled for this first build; core suggestions are rule-based and do not require model integration.</p>
+    </div>
+  );
+}
+
+function ResearchTab({ researchRows, enabled, setEnabled }: { researchRows: ResearchPreviewRow[]; enabled: boolean; setEnabled: (enabled: boolean) => void }) {
+  return (
+    <div className="tab-stack">
+      <section className="two-column">
+        <article className="panel">
+          <div className="panel-head"><div><h2>Contribution Status</h2><p>Research contribution is optional and separate from the personal dashboard.</p></div><span className={classNames("status-dot", enabled && "good")}>{enabled ? "Enabled" : "Off"}</span></div>
+          <label className="demo-toggle inline"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /><span><strong>Contribute pseudonymous research rows</strong><small>No copied health check-ins or notes.</small></span></label>
+        </article>
+        <article className="panel form-panel">
+          <h2>Optional Research Profile</h2>
+          <div className="form-grid two">
+            <label>Age<input placeholder="Optional" /></label><label>Gender<input placeholder="Optional" /></label><label>Dominant hand<input placeholder="Optional" /></label><label>Extra context<input placeholder="Optional" /></label>
+          </div>
+        </article>
+      </section>
+      <section className="two-column">
+        <article className="panel"><h2>What is contributed</h2><ul className="clean-list"><li>Pseudonymous user hash</li><li>Pseudonymous badge hash</li><li>Test type and timestamp bucket</li><li>Score, median reaction time, spread, lapses, accuracy, rhythm timing, memory metrics</li><li>Firmware version and safe device/session metadata</li></ul></article>
+        <article className="panel"><h2>What is never contributed</h2><ul className="clean-list"><li>Name</li><li>Email</li><li>Clerk ID</li><li>Raw health check-ins</li><li>Health notes, profile notes, or copied private notes</li></ul></article>
+      </section>
+      <section className="panel"><h2>Research Protections</h2><div className="chip-row">{["Salted SHA-256 pseudonymous user hash", "Salted SHA-256 pseudonymous badge hash", "No copied health check-ins", "No copied notes", "No email/name/Clerk IDs in research rows"].map((item) => <span key={item}>{item}</span>)}</div></section>
+      <section className="panel">
+        <div className="panel-head"><div><h2>Pseudonymous Row Preview</h2><p>Exactly what a contributed row would look like in demo mode.</p></div></div>
+        {researchRows[0] ? <pre className="code-block">{JSON.stringify(researchRows[0], null, 2)}</pre> : <EmptyState title="No research row preview" detail="Enable Demo Mode or import sessions to preview a pseudonymous contribution row." />}
+      </section>
+      <section className="chart-grid">
+        <MiniBarChart title="Demo sessions by test type" points={TEST_TYPES.map((type) => ({ label: TEST_LABELS[type], value: researchRows.filter((row) => row.test_type === type).length + 8 }))} />
+        <MiniBarChart title="Demo score distribution" points={[{ label: "50s", value: 3 }, { label: "60s", value: 9 }, { label: "70s", value: 18 }, { label: "80s", value: 34 }, { label: "90s", value: 21 }]} />
+        <MiniBarChart title="Firmware distribution" points={[{ label: "v0.4.0", value: 18 }, { label: "v0.4.1", value: 31 }, { label: "v0.4.2", value: 55 }]} />
+        <MiniLineChart title="Aggregate median reaction-time trend" points={[{ label: "W1", value: 301 }, { label: "W2", value: 292 }, { label: "W3", value: 284 }, { label: "W4", value: 276 }]} suffix=" ms" />
+      </section>
+    </div>
+  );
+}
+
+function DevicesTab({ devices, imports }: { devices: BadgeDevice[]; imports: ImportBatch[] }) {
+  if (!devices.length) return <EmptyState title="No devices yet" detail="Badge/device records appear after Bluetooth LE import, JSON import, or Demo Mode." />;
+  return (
+    <div className="tab-stack">
+      <section className="device-grid">
+        {devices.map((device) => <article className="panel" key={device.badge_id}><div className="panel-head"><div><h2>Badge {device.badge_id}</h2><p>Export schema {device.export_schema}</p></div><span className="status-dot good">{device.import_status}</span></div><dl className="detail-list"><div><dt>Firmware</dt><dd>{device.firmware_version}</dd></div><div><dt>Last import</dt><dd>{formatDateTime(device.last_import_at)}</dd></div><div><dt>History retained</dt><dd>{device.retained_sessions} / {device.history_capacity}</dd></div><div><dt>Data completeness</dt><dd>{device.data_completeness}%</dd></div></dl></article>)}
+      </section>
+      <section className="panel"><h2>Recent Import Batches</h2><div className="mini-table"><table><thead><tr><th>Imported</th><th>Badge</th><th>Firmware</th><th>New</th><th>Duplicates</th><th>Status</th></tr></thead><tbody>{imports.map((batch) => <tr key={batch.id}><td>{formatDateTime(batch.imported_at)}</td><td>{batch.badge_id}</td><td>{batch.firmware_version}</td><td>{batch.new_sessions}</td><td>{batch.duplicate_sessions}</td><td>{batch.status}</td></tr>)}</tbody></table></div></section>
+    </div>
+  );
+}
+
+function ExportsTab({ sessions, healthLogs, onDeleteHistory }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; onDeleteHistory: () => void }) {
+  const columns = ["timestamp", "badge_id", "firmware_version", "test_type", "score", "median_ms", "spread_ms", "lapses", "false_starts", "accuracy", "matched_sleep_hours", "matched_stress", "optional_profile_context"];
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const exportJson = () => downloadFile("reflex-personal-export.json", JSON.stringify({ exported_at: new Date().toISOString(), sessions, healthLogs }, null, 2), "application/json");
+  const exportCsv = () => downloadFile("reflex-session-history.csv", sessionsToCsv(sessions, healthLogs), "text/csv");
+  return (
+    <div className="tab-stack">
+      <section className="overview-grid">
+        <article className="panel"><h2>Export Personal CSV</h2><p>Session history with matched health context and optional profile context.</p><button type="button" disabled={!sessions.length} onClick={exportCsv}>Download CSV</button></article>
+        <article className="panel"><h2>Export Personal JSON</h2><p>Structured personal archive for your signed-in account.</p><button type="button" disabled={!sessions.length && !healthLogs.length} onClick={exportJson}>Download JSON</button></article>
+        <article className="panel"><h2>Delete Cloud History</h2><p>Destructive account-level data control with confirmation UI.</p><button className={deleteArmed ? "danger" : "secondary"} type="button" onClick={() => {
+          if (!deleteArmed) setDeleteArmed(true);
+          else {
+            onDeleteHistory();
+            setDeleteArmed(false);
+          }
+        }}>{deleteArmed ? "Confirm Delete Cloud History" : "Review Delete Confirmation"}</button></article>
+      </section>
+      <section className="panel"><h2>Preview Export Columns</h2><div className="chip-row">{columns.map((column) => <span key={column}>{column}</span>)}</div></section>
+      <LatestSessions sessions={sessions.slice(0, 6)} />
+    </div>
+  );
+}
+
+function SettingsTab({
+  demoMode,
+  setDemoMode,
+  researchEnabled,
+  setResearchEnabled,
+  sessions,
+  healthLogs,
+  chartDensity,
+  setChartDensity,
+  defaultLanding,
+  setDefaultLanding,
+  onDeleteHistory,
+}: {
+  demoMode: boolean;
+  setDemoMode: (enabled: boolean) => void;
+  researchEnabled: boolean;
+  setResearchEnabled: (enabled: boolean) => void;
+  sessions: DashboardSession[];
+  healthLogs: HealthLog[];
+  chartDensity: ChartDensity;
+  setChartDensity: (density: ChartDensity) => void;
+  defaultLanding: TabId;
+  setDefaultLanding: (tab: TabId) => void;
+  onDeleteHistory: () => void;
+}) {
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const exportJson = () => downloadFile("reflex-personal-export.json", JSON.stringify({ exported_at: new Date().toISOString(), sessions, healthLogs }, null, 2), "application/json");
+  const exportCsv = () => downloadFile("reflex-session-history.csv", sessionsToCsv(sessions, healthLogs), "text/csv");
+  return (
+    <div className="tab-stack">
+      <section className="overview-grid">
+        <article className="panel">
+          <h2>Account & Privacy</h2>
+          <p>Dashboard data is scoped to the signed-in account. Clerk account controls, session management, and privacy preferences belong here when the live backend is connected.</p>
+          <div className="settings-stack compact">
+            <label className="demo-toggle inline"><input type="checkbox" defaultChecked /><span><strong>User-scoped dashboard access</strong><small>Keep personal sessions visible only to this account.</small></span></label>
+            <label className="demo-toggle inline"><input type="checkbox" defaultChecked /><span><strong>Show import metadata</strong><small>Display badge ID, firmware, retained history, and import health.</small></span></label>
+          </div>
+        </article>
+        <article className="panel">
+          <h2>Display Preferences</h2>
+          <div className="settings-stack compact">
+            <label className="demo-toggle inline"><input type="checkbox" checked={demoMode} onChange={(event) => setDemoMode(event.target.checked)} /><span><strong>Demo Mode</strong><small>Populate the app with realistic sample data.</small></span></label>
+            <label>Default landing tab<select value={defaultLanding} onChange={(event) => setDefaultLanding(event.target.value as TabId)}><option value="overview">Overview</option><option value="import">Import</option><option value="tests">Tests</option><option value="health">Health</option><option value="settings">Settings</option></select></label>
+            <label>Chart density<select value={chartDensity} onChange={(event) => setChartDensity(event.target.value as ChartDensity)}><option value="compact">Compact</option><option value="comfortable">Comfortable</option></select></label>
+          </div>
+        </article>
+        <article className="panel">
+          <h2>Import Preferences</h2>
+          <div className="settings-stack compact">
+            <label className="demo-toggle inline"><input type="checkbox" defaultChecked /><span><strong>Validate before import</strong><small>Check schema and preview records before saving sessions.</small></span></label>
+            <label className="demo-toggle inline"><input type="checkbox" defaultChecked /><span><strong>Idempotent import</strong><small>Deduplicate by signed-in user, badge ID, and session sequence.</small></span></label>
+          </div>
+        </article>
+      </section>
+      <section className="two-column">
+        <article className="panel form-panel">
+          <div className="panel-head"><div><h2>Research Contribution</h2><p>Optional pseudonymous aggregate contribution controls.</p></div><span className={classNames("status-dot", researchEnabled && "good")}>{researchEnabled ? "Enabled" : "Off"}</span></div>
+          <label className="demo-toggle inline"><input type="checkbox" checked={researchEnabled} onChange={(event) => setResearchEnabled(event.target.checked)} /><span><strong>Contribute pseudonymous research rows</strong><small>No email, name, Clerk ID, raw health check-ins, or notes.</small></span></label>
+          <div className="form-grid two">
+            <label>Age<input placeholder="Optional" /></label>
+            <label>Gender<input placeholder="Optional" /></label>
+            <label>Dominant hand<input placeholder="Optional" /></label>
+            <label>Extra context<input placeholder="Optional" /></label>
+          </div>
+        </article>
+        <article className="panel">
+          <h2>Research Protections</h2>
+          <div className="chip-row">{["Salted SHA-256 user hash", "Salted SHA-256 badge hash", "No copied health check-ins", "No copied notes", "No email/name/Clerk IDs"].map((item) => <span key={item}>{item}</span>)}</div>
+        </article>
+      </section>
+      <section className="overview-grid">
+        <article className="panel"><h2>Export Personal CSV</h2><p>Session history with matched health context and optional profile context.</p><button type="button" disabled={!sessions.length} onClick={exportCsv}>Download CSV</button></article>
+        <article className="panel"><h2>Export Personal JSON</h2><p>Structured personal archive for this signed-in account.</p><button type="button" disabled={!sessions.length && !healthLogs.length} onClick={exportJson}>Download JSON</button></article>
+        <article className="panel"><h2>Delete Cloud History</h2><p>Use a confirmation step before destructive account data changes.</p><button className={deleteArmed ? "danger" : "secondary"} type="button" onClick={() => {
+          if (!deleteArmed) setDeleteArmed(true);
+          else {
+            onDeleteHistory();
+            setDeleteArmed(false);
+          }
+        }}>{deleteArmed ? "Confirm Delete Cloud History" : "Review Delete Confirmation"}</button></article>
+      </section>
+      <section className="panel">
+        <h2>Data Controls</h2>
+        <div className="chip-row">{["Export session history with matched health context", "Include optional profile context", "Preview export columns", "Delete signed-in cloud history", "Keep research analytics separate from personal dashboard"].map((item) => <span key={item}>{item}</span>)}</div>
+      </section>
+      <Disclaimer />
+    </div>
+  );
+}
+
+function Disclaimer() {
+  return <p className="disclaimer">Reflex Console is a personal wellness and training tool. It estimates performance trends from badge sessions and optional context logs. It is not a medical device and does not diagnose, treat, or screen for health conditions.</p>;
 }
 
 export function Dashboard() {
+  const { user, isLoaded } = useUser();
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [defaultLanding, setDefaultLandingState] = useState<TabId>("overview");
+  const [chartDensity, setChartDensity] = useState<ChartDensity>("compact");
+  const [demoMode, setDemoMode] = useState(false);
+  const [researchEnabled, setResearchEnabled] = useState(true);
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
   const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
-  const [healthForm, setHealthForm] = useState<HealthLog>(() => blankHealthLog());
-  const [researchConsent, setResearchConsent] = useState<ResearchConsent>({ enabled: true, updated_at: "" });
-  const [researchProfile, setResearchProfile] = useState<ResearchProfile>(() => blankResearchProfile());
-  const [researchDataRows, setResearchDataRows] = useState<ResearchDataRow[]>([]);
-  const [researchDataMessage, setResearchDataMessage] = useState("");
-  const [testType, setTestType] = useState<"all" | TestType>("all");
-  const [sort, setSort] = useState<{ key: SortKey; ascending: boolean }>({ key: "sequence", ascending: false });
-  const [message, setMessage] = useState("Loading sessions…");
-  const [healthMessage, setHealthMessage] = useState("");
-  const [researchMessage, setResearchMessage] = useState("");
-  const [importing, setImporting] = useState(false);
-  const [memoryLevel, setMemoryLevel] = useState(3);
-  const [memorySequence, setMemorySequence] = useState<number[]>([]);
-  const [memoryInput, setMemoryInput] = useState<number[]>([]);
-  const [playIndex, setPlayIndex] = useState(-1);
-  const [isShowingSequence, setIsShowingSequence] = useState(false);
-  const [memoryStatus, setMemoryStatus] = useState("Start with a short visual sequence, then repeat it from memory.");
-  const [memoryStats, setMemoryStats] = useState({ attempts: 0, streak: 0, best: 0 });
-  const { user, isLoaded } = useUser();
+  const [devices, setDevices] = useState<BadgeDevice[]>([]);
+  const [imports, setImports] = useState<ImportBatch[]>([]);
+  const visibleSessions = useMemo(() => sessions, [sessions]);
+  const visibleHealthLogs = useMemo(() => healthLogs, [healthLogs]);
+  const suggestions = useMemo(() => buildTrainingSuggestions(visibleSessions, visibleHealthLogs), [visibleSessions, visibleHealthLogs]);
+  const researchRows = useMemo(() => visibleSessions.length ? demoData.researchRows : [], [visibleSessions.length]);
 
-  const accountAgeDays = useMemo(() => {
-    if (!user?.createdAt) return null;
-    const createdAt = new Date(user.createdAt);
-    if (Number.isNaN(createdAt.getTime())) return null;
-    return Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86_400_000));
-  }, [user?.createdAt]);
-
-  const load = useCallback(async (filter = testType) => {
-    const response = await fetch(`/api/sessions${filter === "all" ? "" : `?testType=${filter}`}`, { cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not load sessions");
-    setSessions(body.sessions);
-    setMessage(body.sessions.length ? "" : "No cloud sessions yet. Import your badge history to begin.");
-  }, [testType]);
-  useEffect(() => { load().catch((error: Error) => setMessage(error.message)); }, [load]);
-
-  const loadHealth = useCallback(async () => {
-    const response = await fetch("/api/health", { cache: "no-store" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not load health logs");
-    setHealthLogs(body.logs);
-  }, []);
-  useEffect(() => { loadHealth().catch((error: Error) => setHealthMessage(error.message)); }, [loadHealth]);
-
-  const loadResearchConsent = useCallback(async () => {
-    const response = await fetch("/api/research-consent", { cache: "no-store" });
-    const text = await response.text();
-    let body: { error?: string; consent?: ResearchConsent; profile?: Partial<ResearchProfile> } | null = null;
-    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not load research contribution setting" }; }
-    if (!response.ok) throw new Error(body?.error || "Could not load research contribution setting");
-    const resolvedProfile = normalizeResearchProfile({
-      ...body?.profile,
-      account_age_days: body?.profile?.account_age_days ?? (accountAgeDays?.toString() ?? ""),
-    });
-    setResearchConsent(body?.consent ?? { enabled: true, updated_at: "" });
-    setResearchProfile(resolvedProfile);
-  }, [accountAgeDays]);
-  useEffect(() => { loadResearchConsent().catch((error: Error) => setResearchMessage(error.message)); }, [loadResearchConsent]);
-
-  const loadResearchData = useCallback(async () => {
-    const response = await fetch("/api/research-data", { cache: "no-store" });
-    const text = await response.text();
-    let body: { error?: string; sessions?: ResearchDataRow[] } | null = null;
-    try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not load research data" }; }
-    if (!response.ok) throw new Error(body?.error || "Could not load research data");
-    setResearchDataRows(body?.sessions ?? []);
-  }, []);
-  useEffect(() => { loadResearchData().catch((error: Error) => setResearchDataMessage(error.message)); }, [loadResearchData]);
-
-  useEffect(() => {
-    if (!isLoaded || !accountAgeDays || researchProfile.account_age_days) return;
-    setResearchProfile((current) => ({ ...current, account_age_days: String(accountAgeDays) }));
-  }, [accountAgeDays, isLoaded, researchProfile.account_age_days]);
-
-  useEffect(() => {
-    if (!isShowingSequence || !memorySequence.length) return undefined;
-    setPlayIndex(0);
-    let finishTimer: number | undefined;
-    const interval = window.setInterval(() => {
-      setPlayIndex((current) => {
-        if (current >= memorySequence.length - 1) {
-          window.clearInterval(interval);
-          finishTimer = window.setTimeout(() => {
-            setPlayIndex(-1);
-            setIsShowingSequence(false);
-            setMemoryStatus("Repeat the sequence.");
-          }, 360);
-          return current;
-        }
-        return current + 1;
-      });
-    }, 650);
-    return () => {
-      window.clearInterval(interval);
-      if (finishTimer !== undefined) window.clearTimeout(finishTimer);
-    };
-  }, [isShowingSequence, memorySequence]);
-
-  const importExport = async (payload: ReflexExport) => {
-    setImporting(true); setMessage("Importing…");
-    try {
-      const response = await fetch("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "Import failed");
-      await load();
-      setMessage(`Imported ${body.imported} sessions from ${body.badgeId}. Re-imports are safe.`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Import failed"); }
-    finally { setImporting(false); }
-  };
-
-  const uploadFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    try { await importExport(JSON.parse(await file.text()) as ReflexExport); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "Could not read export file"); }
-  };
-
-  const importSerial = async () => {
-    if (!window.isSecureContext) { setMessage("Web Serial requires HTTPS. Use the export file upload instead."); return; }
-    const serial = (navigator as Navigator & { serial?: BrowserSerial }).serial;
-    if (!serial) { setMessage("Web Serial requires desktop Chrome or Edge. Use the export file upload instead."); return; }
-    setImporting(true); setMessage("Waiting for badge export…");
-    let port: BrowserSerialPort | undefined;
-    let reader: SerialReader | undefined;
-    try {
-      port = await serial.requestPort();
-      await port.open({ baudRate: 115200 });
-      const writer = port.writable?.getWriter();
-      if (!writer) throw new Error("Badge serial output is unavailable");
-      await writer.write(new TextEncoder().encode(`${EXPORT_COMMAND}\n`));
-      writer.releaseLock();
-      reader = port.readable?.getReader();
-      if (!reader) throw new Error("Badge serial input is unavailable");
-      const parser = createExportAccumulator();
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const payload = parser.push(value);
-        if (payload) { await importExport(payload); return; }
-      }
-      const payload = parser.flush();
-      if (payload) { await importExport(payload); return; }
-      throw new Error("Badge disconnected before completing its export");
-    } catch (error) { setMessage(transportErrorMessage("serial", error)); }
-    finally { if (reader) reader.releaseLock(); if (port) await port.close().catch(() => undefined); setImporting(false); }
-  };
-
-  const importBluetooth = async () => {
-    if (!window.isSecureContext) { setMessage("Web Bluetooth requires HTTPS. Use the export file upload instead."); return; }
-    const bluetooth = (navigator as Navigator & { bluetooth?: BrowserBluetooth }).bluetooth;
-    if (!bluetooth) { setMessage("Web Bluetooth requires desktop Chrome or Edge. Use the export file upload instead."); return; }
-    setImporting(true); setMessage("Waiting for badge export…");
-    let device: BrowserBluetoothDevice | undefined;
-    let server: BrowserBluetoothServer | undefined;
-    let data: BrowserBluetoothCharacteristic | undefined;
-    let listener: ((event: Event) => void) | undefined;
-    let disconnectListener: ((event: Event) => void) | undefined;
-    try {
-      device = await bluetooth.requestDevice({ filters: [{ services: [BLE_SERVICE_UUID], namePrefix: "Reflex" }], optionalServices: [BLE_SERVICE_UUID] });
-      server = await device.gatt?.connect();
-      if (!server) throw new Error("Could not connect to the badge over Bluetooth");
-      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-      const command = await service.getCharacteristic(BLE_COMMAND_UUID);
-      data = await service.getCharacteristic(BLE_DATA_UUID);
-      const parser = createExportAccumulator();
-      const ready = new Promise<ReflexExport>((resolve, reject) => {
-        disconnectListener = () => reject(new Error("Badge disconnected before completing its export"));
-        listener = (event: Event) => {
-          try {
-            const target = event.target as { value?: DataView } | null;
-            if (!target?.value) return;
-            const chunk = new Uint8Array(target.value.buffer, target.value.byteOffset, target.value.byteLength);
-            const payload = parser.push(chunk) ?? parser.flush();
-            if (payload) resolve(payload);
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error("Bluetooth import failed"));
-          }
-        };
-        device?.addEventListener("gattserverdisconnected", disconnectListener);
-        data?.addEventListener("characteristicvaluechanged", listener);
-      });
-      await data.startNotifications();
-      await command.writeValue(new TextEncoder().encode(`${EXPORT_COMMAND}\n`));
-      const payload = await ready;
-      await importExport(payload);
-    } catch (error) { setMessage(transportErrorMessage("bluetooth", error)); }
-    finally {
-      if (device && disconnectListener) device.removeEventListener("gattserverdisconnected", disconnectListener);
-      if (data && listener) data.removeEventListener("characteristicvaluechanged", listener);
-      if (data) await data.stopNotifications().catch(() => undefined);
-      server?.disconnect();
-      setImporting(false);
+  function enableDemo(enabled: boolean) {
+    setDemoMode(enabled);
+    if (enabled) {
+      setSessions(demoData.sessions);
+      setHealthLogs(demoData.healthLogs);
+      setDevices(demoData.devices);
+      setImports(demoData.importBatches);
+    } else {
+      setSessions([]);
+      setHealthLogs([]);
+      setDevices([]);
+      setImports([]);
     }
-  };
+  }
 
-  const removeHistory = async () => {
-    if (!window.confirm("Delete all cloud history for this account? This cannot be undone and does not affect your badge.")) return;
-    const response = await fetch("/api/history", { method: "DELETE" });
-    if (!response.ok) { setMessage("Could not delete cloud history"); return; }
-    setSessions([]); setMessage("Cloud history deleted. Badge history is unchanged.");
-  };
-
-  const updateHealthField = (field: keyof HealthLog, value: string) => {
-    setHealthForm((current) => ({
-      ...current,
-      [field]: field === "notes" || field === "log_date" || field === "log_time" || field === "context" || field === "wake_time" ? value : Number(value),
-    }));
-  };
-
-  const saveHealthLog = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setHealthMessage("Saving health context…");
-    try {
-      const payload = { ...healthForm, log_date: today(), log_time: currentTime(), context: automaticContext(), caffeine_mg: caffeineTotal };
-      const response = await fetch("/api/health", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "Could not save health log");
-      await loadHealth();
-      setHealthForm((current) => ({ ...current, log_date: today(), log_time: currentTime(), context: automaticContext(), notes: "" }));
-      setHealthMessage(`Added ${body.log.context} context for ${body.log.log_date} at ${body.log.log_time}.`);
-    } catch (error) {
-      setHealthMessage(error instanceof Error ? error.message : "Could not save health log");
-    }
-  };
-
-  const saveResearchSettings = async (enabled: boolean, profile: ResearchProfile = researchProfile) => {
-    setResearchMessage("Saving research settings…");
-    try {
-      const nextProfile = {
-        ...profile,
-        account_age_days: profile.account_age_days || (accountAgeDays?.toString() ?? ""),
+  function importExportPayload(payload: ReflexExport) {
+    const importedAt = new Date().toISOString();
+    const existingKeys = new Set(sessions.map((session) => `${session.badge_id}:${session.sequence}`));
+    const importedSessions: DashboardSession[] = payload.sessions
+      .filter((session) => !existingKeys.has(`${payload.begin.badge_id}:${session.sequence}`))
+      .map((session, index) => ({
+        ...session,
+        badge_id: payload.begin.badge_id,
+        firmware_version: payload.begin.firmware_version,
+        imported_at: importedAt,
+        timestamp: new Date(Date.now() - (payload.sessions.length - index) * 3_600_000).toISOString(),
+      }));
+    setSessions((current) => [...importedSessions, ...current].sort((a, b) => new Date(b.timestamp ?? b.imported_at).getTime() - new Date(a.timestamp ?? a.imported_at).getTime()));
+    setDevices((current) => {
+      const retained = Math.min(payload.begin.history_capacity, payload.sessions.length);
+      const nextDevice: BadgeDevice = {
+        badge_id: payload.begin.badge_id,
+        firmware_version: payload.begin.firmware_version,
+        last_import_at: importedAt,
+        history_capacity: payload.begin.history_capacity,
+        retained_sessions: retained,
+        export_schema: "REFLEX_EXPORT_V1",
+        import_status: importedSessions.length ? "Healthy" : "Needs attention",
+        data_completeness: Math.round((retained / Math.max(1, payload.begin.history_capacity)) * 100),
       };
-      const response = await fetch("/api/research-consent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled, profile: nextProfile }),
-      });
-      const text = await response.text();
-      let body: { error?: string; consent?: ResearchConsent; profile?: Partial<ResearchProfile> } | null = null;
-      try { body = text ? JSON.parse(text) : null; } catch { body = { error: text || "Could not save research settings" }; }
-      if (!response.ok) throw new Error(body?.error || "Could not save research settings");
-      setResearchConsent(body?.consent ?? { enabled, updated_at: "" });
-      setResearchProfile(normalizeResearchProfile({ ...body?.profile, account_age_days: body?.profile?.account_age_days ?? nextProfile.account_age_days }));
-      setResearchMessage(enabled ? "Research contribution enabled for future imports." : "Research contribution disabled.");
-    } catch (error) {
-      setResearchMessage(error instanceof Error ? error.message : "Could not save research settings");
-    }
-  };
+      return [nextDevice, ...current.filter((device) => device.badge_id !== payload.begin.badge_id)];
+    });
+    setImports((current) => [{
+      id: `imp-${Date.now()}`,
+      badge_id: payload.begin.badge_id,
+      firmware_version: payload.begin.firmware_version,
+      imported_at: importedAt,
+      new_sessions: importedSessions.length,
+      duplicate_sessions: payload.sessions.length - importedSessions.length,
+      retained_sessions: payload.sessions.length,
+      history_capacity: payload.begin.history_capacity,
+      status: importedSessions.length ? "Complete" : "Duplicate-only",
+    }, ...current]);
+    setActiveTab("overview");
+  }
 
-  const toggleResearchConsent = async (enabled: boolean) => {
-    await saveResearchSettings(enabled, researchProfile);
-  };
+  function clearLocalHistory() {
+    setSessions([]);
+    setHealthLogs([]);
+    setDevices([]);
+    setImports([]);
+    setDemoMode(false);
+  }
 
-  const updateResearchProfileField = (field: keyof ResearchProfile, value: string) => {
-    setResearchProfile((current) => ({ ...current, [field]: value }));
-  };
+  function setDefaultLanding(tab: TabId) {
+    setDefaultLandingState(tab);
+    setActiveTab(tab);
+  }
 
-  const saveResearchProfile = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    await saveResearchSettings(researchConsent.enabled, researchProfile);
-  };
+  if (!isLoaded) return <SignedOutIntro onTryDemo={() => enableDemo(true)} />;
+  if (!user && !demoMode) return <SignedOutIntro onTryDemo={() => enableDemo(true)} />;
 
-  const skipResearchProfile = async () => {
-    const skippedProfile = blankResearchProfile();
-    setResearchProfile(skippedProfile);
-    await saveResearchSettings(researchConsent.enabled, skippedProfile);
-  };
-
-  const startMemoryRound = () => {
-    const sequence = Array.from({ length: memoryLevel }, () => Math.floor(Math.random() * memoryTiles.length));
-    setMemorySequence(sequence);
-    setMemoryInput([]);
-    setIsShowingSequence(true);
-    setMemoryStatus(`Watch ${memoryLevel} steps.`);
-  };
-
-  const chooseMemoryTile = (tile: number) => {
-    if (isShowingSequence || !memorySequence.length) return;
-    const next = [...memoryInput, tile];
-    setMemoryInput(next);
-    const expected = memorySequence[next.length - 1];
-    if (tile !== expected) {
-      setMemoryStats((current) => ({ attempts: current.attempts + 1, streak: 0, best: Math.max(current.best, current.streak) }));
-      setMemoryLevel((current) => Math.max(3, current - 1));
-      setMemoryStatus(`Sequence missed at step ${next.length}. Slow down, breathe, and try again.`);
-      setMemorySequence([]);
-      setMemoryInput([]);
-      return;
-    }
-    if (next.length === memorySequence.length) {
-      setMemoryStats((current) => ({ attempts: current.attempts + 1, streak: current.streak + 1, best: Math.max(current.best, current.streak + 1) }));
-      setMemoryLevel((current) => Math.min(9, current + 1));
-      setMemoryStatus("Clean recall. Next round adapts up by one step.");
-      setMemorySequence([]);
-      setMemoryInput([]);
-    }
-  };
-
-  const stats = useMemo(() => ({
-    latest: sessions.slice().sort((a, b) => b.sequence - a.sequence)[0],
-    quickBest: Math.min(...sessions.filter((item) => item.test_type === "quick" && item.median > 0).map((item) => item.median)),
-    byType: TEST_TYPES.map((type) => ({ type, sessions: sessions.filter((item) => item.test_type === type) })),
-  }), [sessions]);
-  const sorted = useMemo(() => sessions.slice().sort((left, right) => {
-    const a = left[sort.key], b = right[sort.key]; const direction = sort.ascending ? 1 : -1;
-    return (typeof a === "string" ? a.localeCompare(String(b)) : Number(a) - Number(b)) * direction;
-  }), [sessions, sort]);
-  const points = sessions.slice().sort((a, b) => a.sequence - b.sequence);
-  const toggleSort = (key: SortKey) => setSort((current) => ({ key, ascending: current.key === key ? !current.ascending : true }));
-  const caffeineLoggedToday = useMemo(() => healthLogs
-    .filter((log) => log.log_date === today())
-    .reduce((sum, log) => sum + log.caffeine_recent_mg, 0), [healthLogs]);
-  const caffeineMinimum = clamp(caffeineLoggedToday + healthForm.caffeine_recent_mg, 0, 1200);
-  const caffeineTotal = Math.max(healthForm.caffeine_mg, caffeineMinimum);
-
-  const brainHealth = useMemo(() => {
-    const ordered = sessions.slice().sort((a, b) => a.sequence - b.sequence);
-    const recent = ordered.slice(-6);
-    const previous = ordered.slice(-18, -6);
-    const reference = ordered.slice(0, Math.max(0, ordered.length - recent.length)).slice(-20);
-    const latestHealth = healthLogs.slice().sort((a, b) => `${b.log_date} ${b.log_time}`.localeCompare(`${a.log_date} ${a.log_time}`))[0];
-    const recentScore = average(recent.map((item) => item.score));
-    const previousScore = average(previous.map((item) => item.score));
-    const accuracy = average(recent.filter((item) => item.attempts > 0).map((item) => item.correct / item.attempts * 100));
-    const lapsePressure = average(recent.map((item) => item.lapses + item.false_starts)) ?? 0;
-    const consistency = average(recent.map((item) => item.spread));
-    const recentMedian = average(recent.filter((item) => item.median > 0).map((item) => item.median));
-    const referenceMedian = average((reference.length ? reference : ordered).filter((item) => item.median > 0).map((item) => item.median));
-    const referenceSpread = average((reference.length ? reference : ordered).map((item) => item.spread));
-    const recentCv = recentMedian ? (consistency ?? 0) / recentMedian : undefined;
-    const responseSpeed = recentMedian ? 1000 / recentMedian : undefined;
-    const sleepAdjustment = latestHealth ? clamp((latestHealth.sleep_hours - 7) * 3 + (latestHealth.sleep_quality - 6) * 1.5, -12, 10) : 0;
-    const stressAdjustment = latestHealth ? clamp((5 - latestHealth.stress) * 2, -12, 8) : 0;
-    const movementAdjustment = latestHealth ? clamp(latestHealth.exercise_minutes / 15, 0, 6) : 0;
-    const recentCaffeinePenalty = latestHealth ? clamp(latestHealth.caffeine_recent_mg / 75, 0, 8) : 0;
-    const speedComponent = recentMedian && referenceMedian ? clamp(82 + ((referenceMedian - recentMedian) / referenceMedian) * 120, 0, 100) : recentScore;
-    const consistencyComponent = consistency !== undefined && referenceSpread !== undefined ? clamp(82 + ((referenceSpread - consistency) / Math.max(referenceSpread, 1)) * 80, 0, 100) : undefined;
-    const lapseComponent = clamp(100 - lapsePressure * 18, 0, 100);
-    const accuracyComponent = accuracy;
-    const memoryItems = recent.filter((item) => item.test_type === "memory");
-    const memoryComponent = memoryItems.length ? average(memoryItems.map((item) => item.score)) : undefined;
-    const contextComponent = latestHealth ? clamp(72 + sleepAdjustment + stressAdjustment + movementAdjustment - recentCaffeinePenalty + (latestHealth.hydration - 6) * 1.5, 0, 100) : undefined;
-    const readiness = clamp(weightedAverage([
-      { value: speedComponent, weight: .24 },
-      { value: consistencyComponent, weight: .18 },
-      { value: lapseComponent, weight: .17 },
-      { value: accuracyComponent, weight: .16 },
-      { value: memoryComponent, weight: .1 },
-      { value: contextComponent, weight: .15 },
-    ]) ?? 0, 0, 100);
-    const strain = clamp(100 - readiness + lapsePressure * 4 + (latestHealth?.stress ?? 5) * 2, 0, 100);
-    const trend = previousScore === undefined || recentScore === undefined ? undefined : recentScore - previousScore;
-    const expectedScore = previousScore ?? average(reference.map((item) => item.score)) ?? recentScore;
-    const observedMinusExpected = recentScore !== undefined && expectedScore !== undefined ? recentScore - expectedScore : undefined;
-    const scoreSpread = standardDeviation(recent.map((item) => item.score)) ?? 14;
-    const uncertainty = clamp(18 - Math.sqrt(ordered.length) * 1.4 + scoreSpread / 4 + (latestHealth ? 0 : 4), 6, 24);
-    const readinessRange = { low: clamp(readiness - uncertainty, 0, 100), high: clamp(readiness + uncertainty, 0, 100) };
-    const confidence = ordered.length >= 20 && latestHealth ? "Higher" : ordered.length >= 8 ? "Moderate" : "Low";
-    const dailyHealth = new Map<string, HealthLog[]>();
-    for (const log of healthLogs) dailyHealth.set(log.log_date, [...(dailyHealth.get(log.log_date) ?? []), log]);
-    const healthByDate = new Map([...dailyHealth.entries()].map(([day, logs]) => [day, {
-      ...logs[0],
-      sleep_hours: average(logs.map((log) => log.sleep_hours)) ?? logs[0].sleep_hours,
-      sleep_quality: average(logs.map((log) => log.sleep_quality)) ?? logs[0].sleep_quality,
-      stress: average(logs.map((log) => log.stress)) ?? logs[0].stress,
-      mood: average(logs.map((log) => log.mood)) ?? logs[0].mood,
-      exercise_minutes: average(logs.map((log) => log.exercise_minutes)) ?? logs[0].exercise_minutes,
-      caffeine_mg: Math.max(...logs.map((log) => log.caffeine_mg), logs.reduce((sum, log) => sum + log.caffeine_recent_mg, 0)),
-      caffeine_recent_mg: average(logs.map((log) => log.caffeine_recent_mg)) ?? logs[0].caffeine_recent_mg,
-      hydration: average(logs.map((log) => log.hydration)) ?? logs[0].hydration,
-    }]));
-    const paired = ordered.map((session) => ({ session, health: healthByDate.get(dateKey(session.imported_at)) })).filter((item): item is { session: DashboardSession; health: HealthLog } => Boolean(item.health));
-    const correlations = {
-      sleep: pearson(paired.map((item) => ({ x: item.health.sleep_hours, y: item.session.score }))),
-      stress: pearson(paired.map((item) => ({ x: item.health.stress, y: item.session.score }))),
-      exercise: pearson(paired.map((item) => ({ x: item.health.exercise_minutes, y: item.session.score }))),
-      caffeine: pearson(paired.map((item) => ({ x: item.health.caffeine_recent_mg || item.health.caffeine_mg, y: item.session.score }))),
-    };
-    const weakestType = TEST_TYPES.map((type) => {
-      const items = ordered.filter((item) => item.test_type === type);
-      return { type, score: average(items.slice(-5).map((item) => item.score)) ?? 101 };
-    }).sort((a, b) => a.score - b.score)[0];
-    const insights = [];
-    if (!ordered.length) insights.push("Import badge sessions to unlock personalized trend analysis.");
-    if (ordered.length > 0 && ordered.length < 8) insights.push("Collect at least 8 mixed sessions before trusting trend direction.");
-    if (trend !== undefined && trend <= -6) insights.push(`Recent score is down ${Math.abs(Math.round(trend))} points versus the prior window. Favor recovery, sleep, and lower-pressure practice today.`);
-    if (trend !== undefined && trend >= 6) insights.push(`Recent score is up ${Math.round(trend)} points versus the prior window. Keep the same training load for one more cycle before increasing difficulty.`);
-    if (lapsePressure >= 2) insights.push("Lapses and false starts are elevated. Use shorter blocks and add a 60-second reset between tests.");
-    if ((consistency ?? 0) > 180) insights.push("Timing spread is high, which usually points to consistency rather than raw speed. Rhythm and focus drills should be prioritized.");
-    if (latestHealth && latestHealth.sleep_hours < 6.5) insights.push("Sleep logged below 6.5 hours. Treat today's cognitive scores as recovery-sensitive.");
-    if (latestHealth && latestHealth.caffeine_recent_mg > 250) insights.push("Recent caffeine is high. Compare today against similar caffeine timing before treating a score change as readiness.");
-    if (!latestHealth) insights.push("Add today's sleep, stress, movement, caffeine, and hydration to make readiness more useful.");
-    if (weakestType && weakestType.score < 75) insights.push(`${labels[weakestType.type]} is the current lowest-scoring mode. The training plan should start there.`);
-    const dataQualityFlags = [];
-    if (ordered.length < 8) dataQualityFlags.push("Low session count");
-    if (!reference.length) dataQualityFlags.push("No prior baseline window");
-    if (!latestHealth) dataQualityFlags.push("No recent health check-in");
-    if (!memoryItems.length) dataQualityFlags.push("No recent memory session");
-    if ((recentCv ?? 0) > .6) dataQualityFlags.push("High timing variability");
-    return {
-      recentScore, previousScore, accuracy, consistency, readiness, strain, trend, latestHealth, pairedCount: paired.length, correlations, weakestType, insights: insights.slice(0, 5),
-      expectedScore, observedMinusExpected, readinessRange, confidence, responseSpeed, recentCv, dataQualityFlags,
-      components: [
-        { label: "Speed", value: speedComponent, detail: recentMedian ? `${Math.round(recentMedian)} ms recent median` : "Needs valid reaction sessions" },
-        { label: "Consistency", value: consistencyComponent, detail: recentCv !== undefined ? `RT CV ${recentCv.toFixed(2)}` : "Needs timing spread" },
-        { label: "Lapse control", value: lapseComponent, detail: `${lapsePressure.toFixed(1)} lapses/false starts per recent session` },
-        { label: "Accuracy", value: accuracyComponent, detail: "Correct responses on valid attempts" },
-        { label: "Memory", value: memoryComponent, detail: memoryItems.length ? "Recent memory session scores" : "Run Memory Test to include this factor" },
-        { label: "Context", value: contextComponent, detail: latestHealth ? `${latestHealth.context} check-in, recent caffeine ${latestHealth.caffeine_recent_mg} mg` : "Add a health check-in" },
-      ],
-    };
-  }, [healthLogs, sessions]);
-
-  return <div className="dashboard">
-    <section className="import-panel"><div><h2>Import from badge</h2><p>Desktop Chrome/Edge can import over Bluetooth LE or over USB. If transport fails, use the export file upload path.</p></div><div className="import-actions"><button onClick={importBluetooth} disabled={importing}>Bluetooth import</button><button className="secondary" onClick={importSerial} disabled={importing}>USB import</button><label className="secondary">Upload export<input type="file" accept="application/json,.json" onChange={uploadFile} disabled={importing} /></label></div></section>
-    {message && <p className="notice" role="status">{message}</p>}
-
-    <section className="brain-command">
-      <div className="command-copy">
-        <p className="eyebrow">BRAIN HEALTH COMMAND CENTER</p>
-        <h2>Readiness, training, and health context in one place</h2>
-        <p>Reflex Console combines badge timing data with self-reported sleep, stress, movement, caffeine, and hydration. It is a personal wellness and training tool, not a medical diagnosis.</p>
-      </div>
-      <div className="readiness-ring" aria-label={`Readiness score ${Math.round(brainHealth.readiness)} out of 100`} style={{ "--ready": `${brainHealth.readiness}%` } as CSSProperties}>
-        <strong>{Math.round(brainHealth.readiness)}</strong>
-        <span>readiness</span>
-      </div>
-    </section>
-
-    <section className="metrics brain-metrics">
-      <MetricCard label="Brain readiness" value={nice(brainHealth.readiness)} detail="Score, consistency, lapses, and latest health context" />
-      <MetricCard label="Expected delta" value={brainHealth.observedMinusExpected === undefined ? "—" : `${brainHealth.observedMinusExpected > 0 ? "+" : ""}${Math.round(brainHealth.observedMinusExpected)}`} detail={`Expected recent score ${nice(brainHealth.expectedScore)}`} />
-      <MetricCard label="Recent accuracy" value={nice(brainHealth.accuracy, "%")} detail="Correct responses across recent valid attempts" />
-      <MetricCard label="Confidence" value={brainHealth.confidence} detail={`Readiness range ${nice(brainHealth.readinessRange.low)}-${nice(brainHealth.readinessRange.high)}`} />
-    </section>
-
-    <section className="model-panel">
-      <div className="section-heading"><div><h2>Readiness model</h2><p>Transparent within-person baseline, inspired by PVT-style speed, variability, lapse, and context features.</p></div><span>{brainHealth.dataQualityFlags.length ? brainHealth.dataQualityFlags.join(" / ") : "No quality flags"}</span></div>
-      <div className="model-grid">{brainHealth.components.map((component) => <ModelFactor key={component.label} {...component} />)}</div>
-      <div className="model-footnotes"><span>Response speed {brainHealth.responseSpeed === undefined ? "—" : `${brainHealth.responseSpeed.toFixed(2)}/s`}</span><span>Health overlap {brainHealth.pairedCount}</span><span>Cognitive strain {nice(brainHealth.strain)}</span></div>
-    </section>
-
-    <section className="workspace-grid">
-      <section className="memory-trainer">
-        <div className="section-heading"><div><h2>Adaptive memory trainer</h2><p>Visual sequence recall adjusts after each round.</p></div><button onClick={startMemoryRound} disabled={isShowingSequence}>{memorySequence.length ? "Replay round" : "New round"}</button></div>
-        <div className="memory-board" aria-label="Memory sequence buttons">{memoryTiles.map((tile) => <button key={tile.id} type="button" className={`memory-tile ${tile.name} ${playIndex >= 0 && memorySequence[playIndex] === tile.id ? "lit" : ""}`} onClick={() => chooseMemoryTile(tile.id)} disabled={isShowingSequence}>{tile.label}</button>)}</div>
-        <p className="memory-status">{memoryStatus}</p>
-        <div className="training-stats"><span>Level {memoryLevel}</span><span>Attempts {memoryStats.attempts}</span><span>Streak {memoryStats.streak}</span><span>Best {memoryStats.best}</span></div>
-      </section>
-
-      <section className="training-plan">
-        <div className="section-heading"><div><h2>Today&apos;s training plan</h2><p>Generated from your recent weakest signal.</p></div><span>{brainHealth.latestHealth ? brainHealth.latestHealth.log_date : "No log today"}</span></div>
-        <ol>
-          <li><strong>Prime:</strong> 2 minutes of easy rhythm tapping to settle timing variability.</li>
-          <li><strong>Train:</strong> 4 rounds of {brainHealth.weakestType ? labels[brainHealth.weakestType.type] : "Focus"} work, stopping if lapses climb.</li>
-          <li><strong>Recall:</strong> 3 memory-trainer rounds at level {memoryLevel}, then stop before fatigue.</li>
-          <li><strong>Review:</strong> Log sleep, stress, movement, caffeine, and hydration before comparing scores.</li>
-        </ol>
-      </section>
-    </section>
-
-    <section className="health-grid">
-      <form className="health-form" onSubmit={saveHealthLog}>
-        <div className="section-heading"><div><h2>Daily health context</h2><p>Check-ins use your system date and time; context is labeled automatically.</p></div><button type="submit">Add context</button></div>
-        <div className="auto-context"><span>{today()}</span><span>{currentTime()}</span><span>{automaticContext()}</span></div>
-        <div className="form-grid">
-          <label>Wake time<input type="time" value={healthForm.wake_time} onChange={(event) => updateHealthField("wake_time", event.target.value)} /></label>
-          <label>Sleep hours<input type="number" min="0" max="16" step=".1" value={healthForm.sleep_hours} onChange={(event) => updateHealthField("sleep_hours", event.target.value)} /></label>
-          <label>Sleep quality<input type="range" min="1" max="10" value={healthForm.sleep_quality} onChange={(event) => updateHealthField("sleep_quality", event.target.value)} /><span>{healthForm.sleep_quality}/10</span></label>
-          <label>Stress<input type="range" min="1" max="10" value={healthForm.stress} onChange={(event) => updateHealthField("stress", event.target.value)} /><span>{healthForm.stress}/10</span></label>
-          <label>Mood<input type="range" min="1" max="10" value={healthForm.mood} onChange={(event) => updateHealthField("mood", event.target.value)} /><span>{healthForm.mood}/10</span></label>
-          <label>Exercise minutes<input type="number" min="0" max="600" value={healthForm.exercise_minutes} onChange={(event) => updateHealthField("exercise_minutes", event.target.value)} /></label>
-          <label>Total caffeine mg<input type="number" min={caffeineMinimum} max="1200" value={caffeineTotal} onChange={(event) => updateHealthField("caffeine_mg", event.target.value)} /><span>Minimum from today&apos;s logs: {caffeineMinimum} mg</span></label>
-          <label>Recent caffeine mg<input type="number" min="0" max="1200" value={healthForm.caffeine_recent_mg} onChange={(event) => updateHealthField("caffeine_recent_mg", event.target.value)} /></label>
-          <label>Hydration<input type="range" min="1" max="10" value={healthForm.hydration} onChange={(event) => updateHealthField("hydration", event.target.value)} /><span>{healthForm.hydration}/10</span></label>
-        </div>
-        <label className="notes-field">Notes<textarea value={healthForm.notes} onChange={(event) => updateHealthField("notes", event.target.value)} placeholder="Medication changes, illness, travel, unusual fatigue, training notes" /></label>
-        {healthMessage && <p className="notice compact" role="status">{healthMessage}</p>}
-      </form>
-
-      <section className="insights-panel">
-        <div className="section-heading"><div><h2>Personal insights</h2><p>Rules-based signals from recent sessions and logs.</p></div><a className="secondary" href="/api/sessions/csv">Download CSV</a></div>
-        <ul>{brainHealth.insights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
-        <div className="correlations">
-          <CorrelationRow label="Sleep x score" value={brainHealth.correlations.sleep} detail="Positive values mean higher sleep aligned with higher score." />
-          <CorrelationRow label="Stress x score" value={brainHealth.correlations.stress} detail="Negative values can suggest stress-sensitive performance." />
-          <CorrelationRow label="Exercise x score" value={brainHealth.correlations.exercise} detail="Looks for import-day movement association." />
-          <CorrelationRow label="Caffeine x score" value={brainHealth.correlations.caffeine} detail="Useful for spotting overuse or timing effects." />
-        </div>
-      </section>
-    </section>
-
-    <details className="settings-panel">
-      <summary>Data & privacy settings</summary>
-      <section className="research-panel">
-        <section className="settings-stack">
-          <div className="section-heading"><div><h2>User setup</h2><p>Optional, non-invasive profile details that help research analysis. Leave any field blank if you prefer not to share it.</p></div></div>
-          <form className="health-form settings-form" onSubmit={saveResearchProfile}>
-            <div className="form-grid">
-              <label>Age<input type="number" min="1" max="120" value={researchProfile.age_years} onChange={(event) => updateResearchProfileField("age_years", event.target.value)} placeholder="Optional" /></label>
-              <label>Gender<select value={researchProfile.gender} onChange={(event) => updateResearchProfileField("gender", event.target.value)}>
-                <option value="">Prefer not to say</option>
-                <option value="woman">Woman</option>
-                <option value="man">Man</option>
-                <option value="non-binary">Non-binary</option>
-                <option value="another">Another identity</option>
-              </select></label>
-              <label>Dominant hand<select value={researchProfile.handedness} onChange={(event) => updateResearchProfileField("handedness", event.target.value)}>
-                <option value="">Prefer not to say</option>
-                <option value="right">Right</option>
-                <option value="left">Left</option>
-                <option value="ambidextrous">Ambidextrous</option>
-              </select></label>
-              <div className="read-only-field"><span>Account age</span><strong>{isLoaded && accountAgeDays !== null ? `${accountAgeDays} days` : researchProfile.account_age_days ? `${researchProfile.account_age_days} days` : "Not available yet"}</strong></div>
-            </div>
-            <label className="notes-field">Extra context<textarea value={researchProfile.notes} onChange={(event) => updateResearchProfileField("notes", event.target.value)} placeholder="Optional: beginner, recent injury, ADHD, migraines, etc." /></label>
-            <div className="settings-actions">
-              <div className="settings-actions-group">
-                <button type="submit">Save profile</button>
-                <button type="button" className="secondary" onClick={skipResearchProfile}>Skip for now</button>
-              </div>
-              <p className="settings-help">These details stay optional and are only used for aggregate research summaries.</p>
-            </div>
-          </form>
-        </section>
-        <section className="settings-stack">
+  return (
+    <div className={classNames("app-shell", chartDensity === "comfortable" && "density-comfortable")}>
+      <AppNav activeTab={activeTab} onTabChange={setActiveTab} />
+      <main className="dashboard-main">
+        <header className="dashboard-header">
           <div>
-            <h2>Research contribution</h2>
-            <p>Optional and enabled by default. When enabled, future imports copy badge session metrics into a shared research table using salted SHA-256 pseudonymous user and badge hashes. Health check-ins, notes, email, name, and Clerk account IDs are not copied.</p>
+            <p className="eyebrow">REFLEX CONSOLE</p>
+            <h1>{tabs.find((tab) => tab.id === activeTab)?.label}</h1>
+            <p>Private cognitive-performance and reaction-training dashboard for ESP32 badge sessions.</p>
           </div>
-          <label className="consent-toggle"><input type="checkbox" checked={researchConsent.enabled} onChange={(event) => toggleResearchConsent(event.target.checked)} /> Contribute pseudonymous session metrics from future imports</label>
-          {researchMessage && <p className="notice compact" role="status">{researchMessage}</p>}
-        </section>
-        <section className="settings-stack">
-          <div className="section-heading"><div><h2>Research data viewer</h2><p>Recent pseudonymous session rows stored for your account.</p></div></div>
-          {researchDataMessage && <p className="notice compact" role="status">{researchDataMessage}</p>}
-          {researchDataRows.length ? <div className="table-wrap"><table><thead><tr><th>Test</th><th>Score</th><th>Median</th><th>Spread</th><th>Imported</th></tr></thead><tbody>{researchDataRows.map((row) => <tr key={`${row.sequence}-${row.imported_at}`}><td>{row.test_type}</td><td>{row.score}</td><td>{row.median_ms} ms</td><td>{row.spread_ms} ms</td><td>{new Date(row.imported_at).toLocaleString()}</td></tr>)}</tbody></table></div> : <p>No research rows yet. Import a badge session with research contribution enabled to populate this view.</p>}
-        </section>
-      </section>
-    </details>
-
-    <nav className="filters" aria-label="Test type filter"><button className={testType === "all" ? "active" : ""} onClick={() => setTestType("all")}>All tests</button>{TEST_TYPES.map((type) => <button key={type} className={testType === type ? "active" : ""} onClick={() => setTestType(type)}>{labels[type]}</button>)}</nav>
-    <section className="metrics"><MetricCard label="Completed sessions" value={String(sessions.length)} detail={testType === "all" ? "Across all imported badges" : `${labels[testType]} only`} /><MetricCard label="Quick best" value={Number.isFinite(stats.quickBest) ? nice(stats.quickBest, " ms") : "—"} detail="Fastest non-zero Quick median" /><MetricCard label="Recent score" value={nice(stats.latest?.score)} detail={stats.latest ? `Session #${stats.latest.sequence}` : "No completed session"} /><MetricCard label="Test aggregate" value={nice(average(sessions.map((item) => item.score)))} detail="Average score in current filter" /></section>
-    <p className="sequence-note">Charts are ordered by persistent session number, not real clock time.</p>
-    <section className="charts"><LineChart title="Score" values={points.map((item) => ({ sequence: item.sequence, value: item.score }))} color="#70f0c0" /><LineChart title="Reaction / timing error" values={points.map((item) => ({ sequence: item.sequence, value: item.median }))} color="#82aaff" suffix=" ms" /><LineChart title="Consistency / spread" values={points.map((item) => ({ sequence: item.sequence, value: item.spread }))} color="#c79cff" suffix=" ms" /><LineChart title="Lapses and false starts" values={points.map((item) => ({ sequence: item.sequence, value: item.lapses + item.false_starts }))} color="#ff9f7a" /></section>
-    <section className="aggregate"><h2>Test-specific aggregates</h2><div>{stats.byType.map(({ type, sessions: items }) => <article key={type}><strong>{labels[type]}</strong><span>{items.length} sessions</span><span>avg score {nice(average(items.map((item) => item.score)))}</span><span>avg median {nice(average(items.map((item) => item.median)), " ms")}</span></article>)}</div></section>
-    <section className="table-section"><div className="table-heading"><div><h2>Session detail</h2><p>Latest 100 retained per badge; imports remain idempotent.</p></div><div><a className="secondary" href="/api/sessions/csv">Download CSV</a><button className="danger" onClick={removeHistory}>Delete cloud history</button></div></div><div className="table-wrap"><table><thead><tr>{(["sequence", "test_type", "score", "median", "spread", "lapses", "false_starts", "attempts", "correct", "rhythm_bias"] as SortKey[]).map((key) => <th key={key}><button onClick={() => toggleSort(key)}>{tableLabels[key]}{sort.key === key ? (sort.ascending ? " ↑" : " ↓") : ""}</button></th>)}</tr></thead><tbody>{sorted.map((item) => <tr key={`${item.badge_id}-${item.sequence}`}><td>#{item.sequence}</td><td>{labels[item.test_type]}</td><td>{item.score}</td><td>{item.median} ms</td><td>{Math.round(item.spread)} ms</td><td>{item.lapses}</td><td>{item.false_starts}</td><td>{item.attempts}</td><td>{item.correct}</td><td>{item.test_type === "memory" ? item.rhythm_bias : `${item.rhythm_bias} ms`}</td></tr>)}{!sorted.length && <tr><td colSpan={10}>No matching sessions.</td></tr>}</tbody></table></div></section>
-  </div>;
+        </header>
+        {!visibleSessions.length && activeTab !== "overview" && activeTab !== "import" && activeTab !== "settings" && activeTab !== "research" ? <EmptyState title="No badge sessions yet" detail="Connect your badge over Bluetooth, upload a JSON export, or enable Demo Mode from Settings to start reviewing performance trends." actions={<><button onClick={() => setActiveTab("import")} type="button">Connect Badge</button><button className="secondary" onClick={() => setActiveTab("settings")} type="button">Open Settings</button></>} /> : null}
+        {activeTab === "overview" && visibleSessions.length ? <OverviewTab sessions={visibleSessions} healthLogs={visibleHealthLogs} imports={imports} suggestions={suggestions} /> : null}
+        {activeTab === "overview" && !visibleSessions.length ? <div className="tab-stack"><EmptyState title="No badge sessions yet" detail="Connect your badge over Bluetooth, upload a JSON export, or enable Demo Mode from Settings to start reviewing performance trends." actions={<><button onClick={() => setActiveTab("import")} type="button">Connect Badge</button><button className="secondary" onClick={() => setActiveTab("settings")} type="button">Open Settings</button></>} /><Disclaimer /></div> : null}
+        {activeTab === "import" ? <ImportTab sessions={visibleSessions} onImportExport={importExportPayload} /> : null}
+        {activeTab === "sessions" ? <SessionsTab sessions={visibleSessions} /> : null}
+        {activeTab === "tests" ? <TestsTab sessions={visibleSessions} /> : null}
+        {activeTab === "health" ? <HealthTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onAddHealthLog={(log) => setHealthLogs((current) => [log, ...current])} /> : null}
+        {activeTab === "training" ? <TrainingTab suggestions={suggestions} /> : null}
+        {activeTab === "research" ? <ResearchTab researchRows={researchRows} enabled={researchEnabled} setEnabled={setResearchEnabled} /> : null}
+        {activeTab === "devices" ? <DevicesTab devices={devices} imports={imports} /> : null}
+        {activeTab === "exports" ? <ExportsTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onDeleteHistory={clearLocalHistory} /> : null}
+        {activeTab === "settings" ? <SettingsTab demoMode={demoMode} setDemoMode={enableDemo} researchEnabled={researchEnabled} setResearchEnabled={setResearchEnabled} sessions={visibleSessions} healthLogs={visibleHealthLogs} chartDensity={chartDensity} setChartDensity={setChartDensity} defaultLanding={defaultLanding} setDefaultLanding={setDefaultLanding} onDeleteHistory={clearLocalHistory} /> : null}
+      </main>
+    </div>
+  );
 }

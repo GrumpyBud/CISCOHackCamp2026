@@ -22,7 +22,7 @@ namespace {
 constexpr char BLE_SERVICE_UUID[] = "8f4f0001-b0bc-4cf0-a4f2-49e0e6a8c101";
 constexpr char BLE_COMMAND_UUID[] = "8f4f0002-b0bc-4cf0-a4f2-49e0e6a8c101";
 constexpr char BLE_DATA_UUID[] = "8f4f0003-b0bc-4cf0-a4f2-49e0e6a8c101";
-constexpr size_t BLE_CHUNK_SIZE = 160;
+constexpr size_t BLE_CHUNK_SIZE = 16;
 
 void writeLine(Print& out, const char* fmt, ...) {
   char line[320];
@@ -49,7 +49,7 @@ class BleNotifyPrint final : public Print {
       characteristic->setValue((uint8_t*)(buffer + offset), chunk);
       characteristic->notify();
       offset += chunk;
-      delay(2);
+      delay(12);
     }
     return size;
   }

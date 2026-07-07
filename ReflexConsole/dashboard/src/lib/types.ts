@@ -1,6 +1,14 @@
 export const TEST_TYPES = ["quick", "focus", "choice", "rhythm", "memory"] as const;
 export type TestType = (typeof TEST_TYPES)[number];
 
+export const TEST_LABELS: Record<TestType, string> = {
+  quick: "Quick",
+  focus: "Focus",
+  choice: "Choice",
+  rhythm: "Rhythm",
+  memory: "Memory",
+};
+
 export type ExportSession = {
   type: "session";
   sequence: number;
@@ -44,7 +52,32 @@ export type ReflexExport = {
 
 export type DashboardSession = ExportSession & {
   badge_id: string;
+  firmware_version?: string;
+  timestamp?: string;
   imported_at: string;
+};
+
+export type BadgeDevice = {
+  badge_id: string;
+  firmware_version: string;
+  last_import_at: string;
+  history_capacity: number;
+  retained_sessions: number;
+  export_schema: "REFLEX_EXPORT_V1";
+  import_status: "Healthy" | "Needs attention" | "Old import";
+  data_completeness: number;
+};
+
+export type ImportBatch = {
+  id: string;
+  badge_id: string;
+  firmware_version: string;
+  imported_at: string;
+  new_sessions: number;
+  duplicate_sessions: number;
+  retained_sessions: number;
+  history_capacity: number;
+  status: "Complete" | "Duplicate-only" | "Failed";
 };
 
 export type HealthLog = {
@@ -64,4 +97,35 @@ export type HealthLog = {
   notes: string;
   created_at?: string;
   updated_at?: string;
+};
+
+export type ResearchProfile = {
+  age: string;
+  gender: string;
+  dominant_hand: string;
+  extra_context: string;
+};
+
+export type ResearchPreviewRow = {
+  user_hash: string;
+  badge_hash: string;
+  test_type: TestType;
+  timestamp_bucket: string;
+  score: number;
+  median_reaction_ms: number | null;
+  spread_ms: number | null;
+  lapses: number;
+  accuracy: number | null;
+  rhythm_timing_error_ms: number | null;
+  memory_best_span: number | null;
+  firmware_version: string;
+  export_schema: "REFLEX_EXPORT_V1";
+};
+
+export type DemoData = {
+  sessions: DashboardSession[];
+  healthLogs: HealthLog[];
+  devices: BadgeDevice[];
+  importBatches: ImportBatch[];
+  researchRows: ResearchPreviewRow[];
 };
