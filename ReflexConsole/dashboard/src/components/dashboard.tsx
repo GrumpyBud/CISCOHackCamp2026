@@ -1,6 +1,7 @@
 "use client";
 
 import { SignInButton, SignUpButton, useUser } from "@clerk/nextjs";
+import { AnimatePresence, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { ChangeEvent, CSSProperties, FormEvent, Fragment, PointerEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import {
   average,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/analytics";
 import { readBadgeExport } from "@/lib/badge-import";
 import { demoData } from "@/lib/demo-data";
+import type { AiHealthSummaryResponse } from "@/lib/ai-health-summary";
 import { previewImportPayload } from "@/lib/import-validation";
 import { buildTrainingSuggestions, TrainingSuggestion } from "@/lib/recommendations";
 import { BadgeDevice, DashboardSession, HealthLog, ImportBatch, ReflexExport, ResearchPreviewRow, ResearchProfile, TEST_LABELS, TEST_TYPES, TestType } from "@/lib/types";
@@ -45,12 +47,18 @@ type ResearchSettingsPayload = {
   profile?: ResearchProfile;
 };
 
-const tabs: { id: TabId; label: string; mobile?: boolean }[] = [
-  { id: "overview", label: "Overview", mobile: true },
-  { id: "import", label: "Import", mobile: true },
+type AiSummaryState = {
+  status: "idle" | "loading" | "ready" | "error";
+  text: string;
+  meta: string;
+};
+
+const tabs: { id: TabId; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "import", label: "Import" },
   { id: "sessions", label: "Sessions" },
-  { id: "tests", label: "Tests", mobile: true },
-  { id: "health", label: "Health", mobile: true },
+  { id: "tests", label: "Tests" },
+  { id: "health", label: "Health" },
   { id: "training", label: "Training" },
   { id: "research", label: "Research" },
   { id: "devices", label: "Devices" },
@@ -99,21 +107,21 @@ function blankResearchProfile(): ResearchProfile {
   };
 }
 
-function blankHealthLog(): HealthLog {
+function blankHealthLog(previousLog?: HealthLog): HealthLog {
   return {
     log_date: today(),
     log_time: nowTime(),
     context: detectHealthContext(),
-    wake_time: "07:00",
-    sleep_hours: 7.4,
-    sleep_quality: 7,
-    stress: 4,
-    mood: 7,
-    exercise_minutes: 20,
-    caffeine_mg: 0,
+    wake_time: previousLog?.wake_time ?? "07:00",
+    sleep_hours: previousLog?.sleep_hours ?? 7.4,
+    sleep_quality: previousLog?.sleep_quality ?? 7,
+    stress: previousLog?.stress ?? 4,
+    mood: previousLog?.mood ?? 7,
+    exercise_minutes: previousLog?.exercise_minutes ?? 20,
+    caffeine_mg: previousLog?.caffeine_mg ?? 0,
     caffeine_recent_mg: 0,
-    hydration: 7,
-    notes: "",
+    hydration: previousLog?.hydration ?? 7,
+    notes: previousLog?.notes ?? "",
   };
 }
 
@@ -127,6 +135,55 @@ function healthReminderFireKey(date: string, time: string) {
 
 function classNames(...names: Array<string | false | undefined>) {
   return names.filter(Boolean).join(" ");
+}
+
+const motionSpring = { type: "spring", stiffness: 520, damping: 42, mass: 0.8 } as const;
+const softEase = [0.22, 1, 0.36, 1] as const;
+
+function tabMotion(reducedMotion: boolean) {
+  if (reducedMotion) {
+    return {
+      initial: { opacity: 1, y: 0 },
+      animate: { opacity: 1, y: 0 },
+      exit: { opacity: 1, y: 0 },
+    };
+  }
+  return {
+    initial: { opacity: 0, y: 8 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: -6 },
+  };
+}
+
+function itemMotion(reducedMotion: boolean, index = 0) {
+  if (reducedMotion) {
+    return {
+      initial: { opacity: 1, y: 0 },
+      whileInView: { opacity: 1, y: 0 },
+      transition: { duration: 0 },
+    };
+  }
+  return {
+    initial: { opacity: 0, y: 8 },
+    whileInView: { opacity: 1, y: 0 },
+    transition: { duration: 0.22, delay: Math.min(index * 0.035, 0.18), ease: softEase },
+  };
+}
+
+function MotionScene({ sceneKey, children }: { sceneKey: string; children: ReactNode }) {
+  const reducedMotion = useReducedMotion();
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div
+        key={sceneKey}
+        className="tab-scene"
+        {...tabMotion(!!reducedMotion)}
+        transition={{ duration: 0.18, ease: softEase }}
+      >
+        {children}
+      </motion.div>
+    </AnimatePresence>
+  );
 }
 
 function formatMetric(value: number, suffix = "") {
@@ -171,6 +228,7 @@ function consistencyForSession(session: DashboardSession) {
 
 function MiniLineChart({ title, points, suffix = "", band = false }: { title: string; points: TrendPoint[]; suffix?: string; band?: boolean }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const reducedMotion = useReducedMotion();
   const width = 640;
   const height = 210;
   const pad = 24;
@@ -212,8 +270,8 @@ function MiniLineChart({ title, points, suffix = "", band = false }: { title: st
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title} trend`} onPointerMove={handlePointerMove} onPointerLeave={() => setHoveredIndex(null)}>
         <line x1={pad} x2={width - pad} y1={height - pad} y2={height - pad} className="chart-axis" />
-        {bandPolygon ? <polygon points={bandPolygon} className="chart-band" /> : null}
-        {line ? <polyline points={line} className="chart-line" /> : null}
+        {bandPolygon ? <motion.polygon points={bandPolygon} className="chart-band" initial={{ opacity: reducedMotion ? 1 : 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true, amount: 0.45 }} transition={{ duration: 0.18 }} /> : null}
+        {line ? <motion.polyline points={line} className="chart-line" initial={{ pathLength: reducedMotion ? 1 : 0, opacity: reducedMotion ? 1 : 0.6 }} whileInView={{ pathLength: 1, opacity: 1 }} viewport={{ once: true, amount: 0.45 }} transition={{ duration: 0.55, ease: softEase }} /> : null}
         {selected ? (
           <g className="chart-cursor">
             <line x1={selected.x} x2={selected.x} y1={pad} y2={height - pad} />
@@ -234,6 +292,7 @@ function MiniLineChart({ title, points, suffix = "", band = false }: { title: st
 
 function MiniBarChart({ title, points, suffix = "" }: { title: string; points: TrendPoint[]; suffix?: string }) {
   const max = Math.max(1, ...points.map((point) => point.value));
+  const reducedMotion = useReducedMotion();
   return (
     <section className="chart-card">
       <div className="chart-head">
@@ -241,10 +300,10 @@ function MiniBarChart({ title, points, suffix = "" }: { title: string; points: T
         <span>{points.length ? `${points.length} groups` : "No chart data"}</span>
       </div>
       <div className="bar-chart">
-        {points.map((point) => (
+        {points.map((point, index) => (
           <div key={point.label} className="bar-row">
             <span>{point.label}</span>
-            <div><i style={{ width: `${Math.max(4, point.value / max * 100)}%` }} /></div>
+            <div><motion.i initial={{ width: reducedMotion ? `${Math.max(4, point.value / max * 100)}%` : "4%" }} whileInView={{ width: `${Math.max(4, point.value / max * 100)}%` }} viewport={{ once: true, amount: 0.65 }} transition={{ duration: 0.38, delay: Math.min(index * 0.025, 0.12), ease: softEase }} /></div>
             <strong>{formatMetric(point.value, suffix)}</strong>
           </div>
         ))}
@@ -254,12 +313,13 @@ function MiniBarChart({ title, points, suffix = "" }: { title: string; points: T
 }
 
 function MetricCard({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: "neutral" | "good" | "warn" }) {
+  const reducedMotion = useReducedMotion();
   return (
-    <article className={classNames("metric-card", tone)}>
+    <motion.article className={classNames("metric-card", tone)} whileHover={reducedMotion ? undefined : { y: -2 }} transition={motionSpring}>
       <p>{label}</p>
       <strong>{value}</strong>
       <span>{detail}</span>
-    </article>
+    </motion.article>
   );
 }
 
@@ -273,13 +333,18 @@ function EmptyState({ title, detail, actions }: { title: string; detail: string;
   );
 }
 
-function TabIcon({ id }: { id: TabId | "more" }) {
+function TabIcon({ id }: { id: TabId }) {
   const common = { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
   if (id === "overview") return <svg {...common}><path d="M4 13h6V4H4z" /><path d="M14 20h6V4h-6z" /><path d="M4 20h6v-3H4z" /></svg>;
   if (id === "import") return <svg {...common}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>;
+  if (id === "sessions") return <svg {...common}><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>;
   if (id === "tests") return <svg {...common}><path d="M9 3h6" /><path d="M10 9h4" /><path d="M8 21h8" /><path d="M12 3v6" /><path d="M7 9h10l-1 12H8z" /></svg>;
   if (id === "health") return <svg {...common}><path d="M20 11c0 5-8 10-8 10S4 16 4 11a4 4 0 0 1 7-2.65A4 4 0 0 1 20 11Z" /></svg>;
-  if (id === "more") return <svg {...common}><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>;
+  if (id === "training") return <svg {...common}><path d="M6 20V9" /><path d="M12 20V4" /><path d="M18 20v-7" /><path d="M4 20h16" /></svg>;
+  if (id === "research") return <svg {...common}><path d="M10 2v8.5" /><path d="M14 2v8.5" /><path d="M8.5 2h7" /><path d="M7 10.5h10l-1.8 8.4A2.6 2.6 0 0 1 12.7 21h-1.4a2.6 2.6 0 0 1-2.5-2.1Z" /></svg>;
+  if (id === "devices") return <svg {...common}><rect x="7" y="3" width="10" height="18" rx="2" /><path d="M11 6h2" /><path d="M11 18h2" /></svg>;
+  if (id === "exports") return <svg {...common}><path d="M12 21V9" /><path d="m7 14 5-5 5 5" /><path d="M5 3h14v4H5z" /></svg>;
+  if (id === "settings") return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M12 2v3" /><path d="M12 19v3" /><path d="m4.93 4.93 2.12 2.12" /><path d="m16.95 16.95 2.12 2.12" /><path d="M2 12h3" /><path d="M19 12h3" /><path d="m4.93 19.07 2.12-2.12" /><path d="m16.95 7.05 2.12-2.12" /></svg>;
   return <svg {...common}><path d="M12 20V10" /><path d="M18 20V4" /><path d="M6 20v-6" /></svg>;
 }
 
@@ -303,27 +368,29 @@ function AppNav({ activeTab, onTabChange }: { activeTab: TabId; onTabChange: (ta
         <nav aria-label="Dashboard tabs">
           {tabs.map((tab) => (
             <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => onTabChange(tab.id)} type="button">
+              {activeTab === tab.id ? <motion.span className="nav-active-indicator" layoutId="desktop-tab-indicator" transition={motionSpring} /> : null}
               {tab.label}
             </button>
           ))}
         </nav>
       </aside>
       <nav className="mobile-nav" aria-label="Mobile dashboard tabs">
-        {tabs.filter((tab) => tab.mobile).map((tab) => (
+        {tabs.map((tab) => (
           <button key={tab.id} aria-label={tab.label} title={tab.label} className={activeTab === tab.id ? "active" : ""} onClick={() => onTabChange(tab.id)} type="button">
+            {activeTab === tab.id ? <motion.span className="nav-active-indicator" layoutId="mobile-tab-indicator" transition={motionSpring} /> : null}
             <TabIcon id={tab.id} />
           </button>
         ))}
-        <button aria-label="More" title="More" className={!tabs.find((tab) => tab.id === activeTab)?.mobile ? "active" : ""} onClick={() => onTabChange("training")} type="button"><TabIcon id="more" /></button>
       </nav>
     </>
   );
 }
 
 function SignedOutIntro({ onTryDemo }: { onTryDemo: () => void }) {
+  const reducedMotion = useReducedMotion();
   return (
     <main className="signed-out">
-      <section className="intro-panel">
+      <motion.section className="intro-panel" {...itemMotion(!!reducedMotion)} viewport={{ once: true }}>
         <p className="eyebrow">REFLEX CONSOLE</p>
         <h1>Private badge-session analytics for cognitive-performance training.</h1>
         <p>Import ESP32 badge session history, review personal performance trends, and optionally contribute pseudonymous aggregate research rows. Reflex Console is a non-medical wellness tool.</p>
@@ -332,7 +399,7 @@ function SignedOutIntro({ onTryDemo }: { onTryDemo: () => void }) {
           <SignInButton><button className="secondary" type="button">Sign In</button></SignInButton>
           <SignUpButton><button className="secondary" type="button">Create Account</button></SignUpButton>
         </div>
-      </section>
+      </motion.section>
       <section className="intro-grid">
         <MetricCard label="Import paths" value="BLE + JSON" detail="Bluetooth LE command REFLEX_EXPORT_V1 or export-file upload fallback." />
         <MetricCard label="Privacy model" value="User scoped" detail="Research contribution is optional and pseudonymous." />
@@ -343,6 +410,7 @@ function SignedOutIntro({ onTryDemo }: { onTryDemo: () => void }) {
 }
 
 function OverviewTab({ sessions, healthLogs, imports, suggestions }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; imports: ImportBatch[]; suggestions: TrainingSuggestion[] }) {
+  const reducedMotion = useReducedMotion();
   const readiness = buildReadiness(sessions, healthLogs);
   const metrics = todayVsBaseline(sessions);
   const latestImport = imports[0];
@@ -375,7 +443,11 @@ function OverviewTab({ sessions, healthLogs, imports, suggestions }: { sessions:
         </article>
       </section>
       <section className="metric-grid compact">
-        {metrics.map((metric) => <MetricCard key={metric.label} label={metric.label} value={metric.value} detail={metric.detail} />)}
+        {metrics.map((metric, index) => (
+          <motion.div key={metric.label} {...itemMotion(!!reducedMotion, index)} viewport={{ once: true, amount: 0.4 }}>
+            <MetricCard label={metric.label} value={metric.value} detail={metric.detail} />
+          </motion.div>
+        ))}
       </section>
       <section className="overview-grid">
         <article className="panel">
@@ -436,6 +508,7 @@ function ImportTab({ sessions, onImportExport }: { sessions: DashboardSession[];
   const [preview, setPreview] = useState<ReturnType<typeof previewImportPayload> | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
   const progress = status === "done" ? 100 : status === "idle" ? 0 : Math.min(95, Math.round(((step + 1) / importSteps.length) * 100));
+  const reducedMotion = useReducedMotion();
 
   async function submitImport(exportData: ReflexExport, source: "badge" | "file") {
     const previewResult = previewImportPayload(exportData, sessions);
@@ -506,7 +579,7 @@ function ImportTab({ sessions, onImportExport }: { sessions: DashboardSession[];
         </section>
       ) : null}
       <section className="import-progress" aria-label={`Import progress ${progress}%`}>
-        <div><span style={{ width: `${progress}%` }} /></div>
+        <div><motion.span animate={{ width: `${progress}%` }} transition={reducedMotion ? { duration: 0 } : { duration: 0.28, ease: softEase }} /></div>
         <small>{status === "idle" ? "Import not started" : status === "done" ? "Import complete" : status === "error" ? "Import needs attention" : `${progress}% complete · ${message}`}</small>
       </section>
       <section className="import-layout">
@@ -515,9 +588,9 @@ function ImportTab({ sessions, onImportExport }: { sessions: DashboardSession[];
           <button type="button" onClick={connectBadgeImport}>Connect Badge</button>
           <div className="import-flow">
             {importSteps.map((label, index) => (
-              <div key={label} className={classNames(index < step || status === "done" ? "done" : index === step && status === "active" ? "active" : "", status === "error" && index === step ? "error" : "")}>
+              <motion.div key={label} className={classNames(index < step || status === "done" ? "done" : index === step && status === "active" ? "active" : "", status === "error" && index === step ? "error" : "")} animate={reducedMotion ? { scale: 1 } : { scale: index === step && status === "active" ? 1.015 : 1 }} transition={motionSpring}>
                 <span>{index + 1}</span><p>{label}</p>
-              </div>
+              </motion.div>
             ))}
           </div>
           <div className={classNames("notice", status === "done" && "good", status === "error" && "error")}>{message}</div>
@@ -620,6 +693,7 @@ function SessionsTab({ sessions }: { sessions: DashboardSession[] }) {
 
 function TestsTab({ sessions }: { sessions: DashboardSession[] }) {
   const [mode, setMode] = useState<TestType>("quick");
+  const reducedMotion = useReducedMotion();
   const summary = summarizeTestMode(sessions, mode);
   const label = TEST_LABELS[mode];
   const metric = metricLabel(mode);
@@ -632,32 +706,48 @@ function TestsTab({ sessions }: { sessions: DashboardSession[] }) {
   return (
     <div className="tab-stack">
       <section className="segmented" aria-label="Test mode tabs">
-        {TEST_TYPES.map((type) => <button key={type} className={mode === type ? "active" : ""} onClick={() => setMode(type)} type="button">{TEST_LABELS[type]}</button>)}
+        {TEST_TYPES.map((type) => (
+          <button key={type} className={mode === type ? "active" : ""} onClick={() => setMode(type)} type="button">
+            {mode === type ? <motion.span className="segmented-pill" layoutId="tests-mode-pill" transition={motionSpring} /> : null}
+            <span>{TEST_LABELS[type]}</span>
+          </button>
+        ))}
       </section>
-      <section className="metric-grid">
-        <MetricCard label="Latest score" value={formatMetric(summary.latestScore)} detail={`${label} most recent session`} />
-        <MetricCard label="Best score" value={formatMetric(summary.bestScore)} detail="Personal best in retained history" tone="good" />
-        <MetricCard label="7-day trend" value={`${summary.trend7 >= 0 ? "+" : ""}${summary.trend7.toFixed(1)}`} detail="Score vs baseline" />
-        <MetricCard label="30-day trend" value={`${summary.trend30 >= 0 ? "+" : ""}${summary.trend30.toFixed(1)}`} detail="Score vs baseline" />
-        <MetricCard label="Baseline comparison" value={formatMetric(summary.latestMetric - summary.baselineMetric, metricSuffix(mode))} detail={`${metric} vs baseline`} />
-        <MetricCard label="Consistency spread" value={formatMetric(averageConsistency, " ms")} detail={`Average of ${recentModeSessions.length} recent ${label.toLowerCase()} sessions`} />
-        <MetricCard label="Recent lapses" value={`${totalLapses}`} detail="Stored lapse count in recent retained sessions" />
-        <MetricCard label="False starts" value={`${totalFalseStarts}`} detail="Stored start-discipline count" />
-        <MetricCard label="Accuracy" value={`${averageAccuracy}%`} detail="Correct responses divided by attempts" />
-      </section>
-      <section className="chart-grid">
-        <MiniLineChart title={`${label} score trend`} points={trendByType(sessions, mode, "score")} />
-        <MiniLineChart title={`${metric} trend`} points={trendByType(sessions, mode, "metric")} suffix={metricSuffix(mode)} />
-        <MiniLineChart title={`${label} consistency spread`} points={trendByType(sessions, mode, "spread")} suffix=" ms" />
-        <MiniLineChart title={`${label} lapses over time`} points={trendByType(sessions, mode, "lapses")} />
-        <MiniLineChart title={`${label} false starts trend`} points={trendByType(sessions, mode, "false_starts")} />
-      </section>
-      <article className="panel">
-        <h2>Metric Explanation</h2>
-        <p>{testExplanation(mode)}</p>
-        <p className="soft-note">{summary.modeSessions.length < 5 ? `Data-quality note: ${label} confidence is limited because fewer than 5 retained sessions are available.` : `Data-quality note: ${label} has enough retained demo sessions for a useful personal trend view.`}</p>
-      </article>
-      <LatestSessions sessions={summary.modeSessions.slice(0, 8)} />
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={mode}
+          className="tab-stack"
+          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
+          transition={{ duration: reducedMotion ? 0 : 0.18, ease: softEase }}
+        >
+          <section className="metric-grid">
+            <MetricCard label="Latest score" value={formatMetric(summary.latestScore)} detail={`${label} most recent session`} />
+            <MetricCard label="Best score" value={formatMetric(summary.bestScore)} detail="Personal best in retained history" tone="good" />
+            <MetricCard label="7-day trend" value={`${summary.trend7 >= 0 ? "+" : ""}${summary.trend7.toFixed(1)}`} detail="Score vs baseline" />
+            <MetricCard label="30-day trend" value={`${summary.trend30 >= 0 ? "+" : ""}${summary.trend30.toFixed(1)}`} detail="Score vs baseline" />
+            <MetricCard label="Baseline comparison" value={formatMetric(summary.latestMetric - summary.baselineMetric, metricSuffix(mode))} detail={`${metric} vs baseline`} />
+            <MetricCard label="Consistency spread" value={formatMetric(averageConsistency, " ms")} detail={`Average of ${recentModeSessions.length} recent ${label.toLowerCase()} sessions`} />
+            <MetricCard label="Recent lapses" value={`${totalLapses}`} detail="Stored lapse count in recent retained sessions" />
+            <MetricCard label="False starts" value={`${totalFalseStarts}`} detail="Stored start-discipline count" />
+            <MetricCard label="Accuracy" value={`${averageAccuracy}%`} detail="Correct responses divided by attempts" />
+          </section>
+          <section className="chart-grid">
+            <MiniLineChart title={`${label} score trend`} points={trendByType(sessions, mode, "score")} />
+            <MiniLineChart title={`${metric} trend`} points={trendByType(sessions, mode, "metric")} suffix={metricSuffix(mode)} />
+            <MiniLineChart title={`${label} consistency spread`} points={trendByType(sessions, mode, "spread")} suffix=" ms" />
+            <MiniLineChart title={`${label} lapses over time`} points={trendByType(sessions, mode, "lapses")} />
+            <MiniLineChart title={`${label} false starts trend`} points={trendByType(sessions, mode, "false_starts")} />
+          </section>
+          <article className="panel">
+            <h2>Metric Explanation</h2>
+            <p>{testExplanation(mode)}</p>
+            <p className="soft-note">{summary.modeSessions.length < 5 ? `Data-quality note: ${label} confidence is limited because fewer than 5 retained sessions are available.` : `Data-quality note: ${label} has enough retained demo sessions for a useful personal trend view.`}</p>
+          </article>
+          <LatestSessions sessions={summary.modeSessions.slice(0, 8)} />
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }
@@ -674,7 +764,7 @@ function testExplanation(mode: TestType) {
 }
 
 function HealthTab({ sessions, healthLogs, onAddHealthLog }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; onAddHealthLog: (log: HealthLog) => Promise<void> }) {
-  const [form, setForm] = useState<HealthLog>(() => blankHealthLog());
+  const [form, setForm] = useState<HealthLog>(() => blankHealthLog(healthLogs[0]));
   const [formError, setFormError] = useState("");
   const sliderFields = [
     { field: "sleep_hours", label: "Sleep", min: 0, max: 16, step: 0.1, suffix: "h" },
@@ -712,6 +802,18 @@ function HealthTab({ sessions, healthLogs, onAddHealthLog }: { sessions: Dashboa
   }, [priorCaffeineToday]);
 
   useEffect(() => {
+    if (!healthLogs.length) return;
+    const latest = healthLogs[0];
+    setForm((current) => ({
+      ...blankHealthLog(latest),
+      log_date: today(),
+      log_time: nowTime(),
+      context: detectHealthContext(),
+      caffeine_mg: Math.max(current.caffeine_mg, latest.caffeine_mg ?? 0),
+    }));
+  }, [healthLogs]);
+
+  useEffect(() => {
     const syncAutomaticFields = () => {
       const now = new Date();
       setForm((current) => ({
@@ -737,7 +839,7 @@ function HealthTab({ sessions, healthLogs, onAddHealthLog }: { sessions: Dashboa
         context: detectHealthContext(now),
       });
       setFormError("");
-      setForm(blankHealthLog());
+      setForm(blankHealthLog(form));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "Could not save health check-in.");
     }
@@ -796,10 +898,74 @@ function HealthTab({ sessions, healthLogs, onAddHealthLog }: { sessions: Dashboa
   );
 }
 
-function TrainingTab({ suggestions }: { suggestions: TrainingSuggestion[] }) {
-  if (!suggestions.length) return <EmptyState title="No training suggestion yet" detail="Import enough recent badge sessions to generate evidence-based training suggestions." />;
+function LocalAiSummaryPanel({ sessions, healthLogs, suggestions }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; suggestions: TrainingSuggestion[] }) {
+  const [summary, setSummary] = useState<AiSummaryState>({ status: "idle", text: "", meta: "Configured from dashboard env vars." });
+  const hasContext = sessions.length > 0 || healthLogs.length > 0;
+
+  async function generateSummary() {
+    setSummary({ status: "loading", text: "", meta: "Asking the configured model endpoint..." });
+    try {
+      const response = await fetch("/api/ai/health-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessions: sessions.slice(0, 36),
+          healthLogs: healthLogs.slice(0, 20),
+          suggestions,
+        }),
+      });
+      const payload = await response.json() as AiHealthSummaryResponse & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Could not generate local AI summary.");
+      setSummary({
+        status: "ready",
+        text: payload.summary,
+        meta: `${payload.provider} · ${payload.model}`,
+      });
+    } catch (error) {
+      setSummary({
+        status: "error",
+        text: error instanceof Error ? error.message : "Could not generate local AI summary.",
+        meta: "Check that the model endpoint is reachable and LOCAL_AI_BASE_URL is set.",
+      });
+    }
+  }
+
+  return (
+    <section className="panel ai-summary-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Local AI Health Summary</h2>
+          <p>Generated through the dashboard API using the model server configured in your deployment env.</p>
+        </div>
+        <span className={classNames("pill", summary.status === "ready" && "good", summary.status === "error" && "warn")}>{summary.status}</span>
+      </div>
+      <div className="action-row">
+        <button type="button" onClick={generateSummary} disabled={!hasContext || summary.status === "loading"}>{summary.status === "loading" ? "Generating..." : "Generate Summary"}</button>
+        <span className="summary-meta">{summary.meta}</span>
+      </div>
+      {summary.text ? (
+        <div className={classNames("ai-summary-output", summary.status === "error" && "error")}>
+          {summary.text.split("\n").filter(Boolean).map((line) => <p key={line}>{line}</p>)}
+        </div>
+      ) : (
+        <p className="soft-note">Uses recent badge sessions, health check-ins, and rule-based suggestions. Free-text health notes are not sent to the model.</p>
+      )}
+    </section>
+  );
+}
+
+function TrainingTab({ sessions, healthLogs, suggestions }: { sessions: DashboardSession[]; healthLogs: HealthLog[]; suggestions: TrainingSuggestion[] }) {
+  if (!suggestions.length) {
+    return (
+      <div className="tab-stack">
+        <LocalAiSummaryPanel sessions={sessions} healthLogs={healthLogs} suggestions={suggestions} />
+        <EmptyState title="No training suggestion yet" detail="Import enough recent badge sessions to generate evidence-based training suggestions." />
+      </div>
+    );
+  }
   return (
     <div className="tab-stack">
+      <LocalAiSummaryPanel sessions={sessions} healthLogs={healthLogs} suggestions={suggestions} />
       <section className="panel">
         <div className="panel-head"><div><h2>Evidence-Based Training Suggestions</h2><p>Deterministic rule-based recommendations from recent training signals.</p></div></div>
         <div className="suggestion-list">
@@ -820,7 +986,7 @@ function TrainingTab({ suggestions }: { suggestions: TrainingSuggestion[] }) {
         <MetricCard label="Recent outcomes" value={`${suggestions.filter((suggestion) => suggestion.confidence !== "Limited").length} supported`} detail="Suggestions with moderate or strong confidence" />
       </section>
       <section className="calendar-grid">{Array.from({ length: 28 }, (_, index) => <span key={index} className={index % 6 === 0 ? "light" : "filled"} />)}</section>
-      <p className="soft-note">Optional AI summaries are disabled for this first build; core suggestions are rule-based and do not require model integration.</p>
+      <p className="soft-note">AI output is local-demo interpretation only; core suggestions remain rule-based and do not require model integration.</p>
     </div>
   );
 }
@@ -1248,9 +1414,10 @@ export function Dashboard() {
   if (!user && !demoMode) return <SignedOutIntro onTryDemo={() => enableDemo(true)} />;
 
   return (
-    <div className={classNames("app-shell", chartDensity === "comfortable" && "density-comfortable")}>
-      <AppNav activeTab={activeTab} onTabChange={setActiveTab} />
-      <main className="dashboard-main">
+    <MotionConfig reducedMotion="user">
+      <div className={classNames("app-shell", chartDensity === "comfortable" && "density-comfortable")}>
+        <AppNav activeTab={activeTab} onTabChange={setActiveTab} />
+        <main className="dashboard-main">
         <header className="dashboard-header">
           <div>
             <p className="eyebrow">REFLEX CONSOLE</p>
@@ -1272,18 +1439,21 @@ export function Dashboard() {
             </div>
           </section>
         ) : null}
-        {activeTab === "overview" && visibleSessions.length ? <OverviewTab sessions={visibleSessions} healthLogs={visibleHealthLogs} imports={imports} suggestions={suggestions} /> : null}
-        {activeTab === "overview" && !visibleSessions.length ? <div className="tab-stack"><EmptyState title="No badge sessions yet" detail="Connect your badge over Bluetooth, upload a JSON export, or enable Demo Mode from Settings to start reviewing performance trends." actions={<><button onClick={() => setActiveTab("import")} type="button">Connect Badge</button><button className="secondary" onClick={() => setActiveTab("settings")} type="button">Open Settings</button></>} /><Disclaimer /></div> : null}
-        {activeTab === "import" ? <ImportTab sessions={visibleSessions} onImportExport={importExportPayload} /> : null}
-        {activeTab === "sessions" ? <SessionsTab sessions={visibleSessions} /> : null}
-        {activeTab === "tests" ? <TestsTab sessions={visibleSessions} /> : null}
-        {activeTab === "health" ? <HealthTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onAddHealthLog={addHealthLog} /> : null}
-        {activeTab === "training" ? <TrainingTab suggestions={suggestions} /> : null}
-        {activeTab === "research" ? <ResearchTab researchRows={researchRows} enabled={researchEnabled} setEnabled={updateResearchEnabled} profile={researchProfile} onSaveProfile={(profile) => saveResearchSettings(profile, researchEnabled)} /> : null}
-        {activeTab === "devices" ? <DevicesTab devices={devices} imports={imports} /> : null}
-        {activeTab === "exports" ? <ExportsTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onDeleteHistory={clearLocalHistory} /> : null}
-        {activeTab === "settings" ? <SettingsTab demoMode={demoMode} setDemoMode={enableDemo} researchEnabled={researchEnabled} setResearchEnabled={updateResearchEnabled} sessions={visibleSessions} healthLogs={visibleHealthLogs} chartDensity={chartDensity} setChartDensity={setChartDensity} defaultLanding={defaultLanding} setDefaultLanding={setDefaultLanding} onDeleteHistory={clearLocalHistory} /> : null}
-      </main>
-    </div>
+          <MotionScene sceneKey={activeTab}>
+            {activeTab === "overview" && visibleSessions.length ? <OverviewTab sessions={visibleSessions} healthLogs={visibleHealthLogs} imports={imports} suggestions={suggestions} /> : null}
+            {activeTab === "overview" && !visibleSessions.length ? <div className="tab-stack"><EmptyState title="No badge sessions yet" detail="Connect your badge over Bluetooth, upload a JSON export, or enable Demo Mode from Settings to start reviewing performance trends." actions={<><button onClick={() => setActiveTab("import")} type="button">Connect Badge</button><button className="secondary" onClick={() => setActiveTab("settings")} type="button">Open Settings</button></>} /><Disclaimer /></div> : null}
+            {activeTab === "import" ? <ImportTab sessions={visibleSessions} onImportExport={importExportPayload} /> : null}
+            {activeTab === "sessions" ? <SessionsTab sessions={visibleSessions} /> : null}
+            {activeTab === "tests" ? <TestsTab sessions={visibleSessions} /> : null}
+            {activeTab === "health" ? <HealthTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onAddHealthLog={addHealthLog} /> : null}
+            {activeTab === "training" ? <TrainingTab sessions={visibleSessions} healthLogs={visibleHealthLogs} suggestions={suggestions} /> : null}
+            {activeTab === "research" ? <ResearchTab researchRows={researchRows} enabled={researchEnabled} setEnabled={updateResearchEnabled} profile={researchProfile} onSaveProfile={(profile) => saveResearchSettings(profile, researchEnabled)} /> : null}
+            {activeTab === "devices" ? <DevicesTab devices={devices} imports={imports} /> : null}
+            {activeTab === "exports" ? <ExportsTab sessions={visibleSessions} healthLogs={visibleHealthLogs} onDeleteHistory={clearLocalHistory} /> : null}
+            {activeTab === "settings" ? <SettingsTab demoMode={demoMode} setDemoMode={enableDemo} researchEnabled={researchEnabled} setResearchEnabled={updateResearchEnabled} sessions={visibleSessions} healthLogs={visibleHealthLogs} chartDensity={chartDensity} setChartDensity={setChartDensity} defaultLanding={defaultLanding} setDefaultLanding={setDefaultLanding} onDeleteHistory={clearLocalHistory} /> : null}
+          </MotionScene>
+        </main>
+      </div>
+    </MotionConfig>
   );
 }

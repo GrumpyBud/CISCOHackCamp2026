@@ -12,6 +12,7 @@
   "dependencies": {
     "@clerk/nextjs": "^6.34.0",
     "@neondatabase/serverless": "^1.0.0",
+    "motion": "^12.42.2",
     "next": "^15.5.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

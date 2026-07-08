@@ -23,6 +23,7 @@ constexpr char BLE_SERVICE_UUID[] = "8f4f0001-b0bc-4cf0-a4f2-49e0e6a8c101";
 constexpr char BLE_COMMAND_UUID[] = "8f4f0002-b0bc-4cf0-a4f2-49e0e6a8c101";
 constexpr char BLE_DATA_UUID[] = "8f4f0003-b0bc-4cf0-a4f2-49e0e6a8c101";
 constexpr size_t BLE_CHUNK_SIZE = 16;
+constexpr uint8_t BLE_EXPORT_REPEATS = 3;
 
 void writeLine(Print& out, const char* fmt, ...) {
   char line[320];
@@ -89,7 +90,7 @@ class ReflexBleServerCallbacks final : public BLEServerCallbacks {
 
 void ReflexApp::begin() {
   Serial.begin(115200);
-  DEBUGF("\nReflex Console %s release %s %s\n", FIRMWARE_VERSION, FIRMWARE_RELEASE_DATE, FIRMWARE_RELEASE_TIME);
+  DEBUGF("\nReflex Console %s release %s\n", FIRMWARE_VERSION, FIRMWARE_RELEASE_DATE);
   pinMode(Pins::LED, OUTPUT);
   led(false);
   display.begin();
@@ -264,7 +265,10 @@ void ReflexApp::serviceBluetooth() {
   if (!bleExportRequested || !bleDataCharacteristic) return;
   bleExportRequested = false;
   BleNotifyPrint out(bleDataCharacteristic);
-  storage.exportHistory(out);
+  for (uint8_t i = 0; i < BLE_EXPORT_REPEATS; i++) {
+    storage.exportHistory(out);
+    delay(180);
+  }
   BLEDevice::startAdvertising();
 }
 #endif

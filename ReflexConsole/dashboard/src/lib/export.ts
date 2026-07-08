@@ -51,9 +51,29 @@ export function validateExport(value: unknown): ReflexExport {
 
 export function exportFromFrames(frames: unknown[]): ReflexExport {
   const parsed = frames.filter((frame): frame is Record<string, unknown> => isRecord(frame));
-  const begin = parsed.find((frame) => frame.type === "begin");
-  const end = parsed.find((frame) => frame.type === "end");
-  const sessions = parsed.filter((frame) => frame.type === "session");
+  const begins = parsed.filter((frame) => frame.type === "begin").map(parseBegin);
+  const ends = parsed.filter((frame) => frame.type === "end").map(parseEnd);
+  const begin = begins[0];
+  const end = ends.at(-1);
+  if (!begin) fail("missing protocol-1 begin frame");
+  if (!end) fail("missing protocol-1 end frame");
+  for (const next of begins.slice(1)) {
+    if (next.badge_id !== begin.badge_id || next.firmware_version !== begin.firmware_version || next.session_sequence_start !== begin.session_sequence_start || next.session_sequence_end !== begin.session_sequence_end || next.session_count !== begin.session_count) {
+      fail("conflicting repeated begin frame");
+    }
+  }
+  for (const next of ends) {
+    if (next.session_sequence_start !== begin.session_sequence_start || next.session_sequence_end !== begin.session_sequence_end || next.session_count !== begin.session_count) {
+      fail("conflicting repeated end frame");
+    }
+  }
+  const sessionsBySequence = new Map<number, ExportSession>();
+  for (const session of parsed.filter((frame) => frame.type === "session").map(parseSession)) {
+    const existing = sessionsBySequence.get(session.sequence);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(session)) fail("conflicting repeated session frame");
+    sessionsBySequence.set(session.sequence, session);
+  }
+  const sessions = [...sessionsBySequence.values()].sort((a, b) => a.sequence - b.sequence);
   return validateExport({ format: "reflex-console-export", protocol: 1, begin, sessions, end });
 }
 

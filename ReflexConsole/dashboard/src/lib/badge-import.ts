@@ -154,6 +154,7 @@ export async function readBadgeExport(onProgress?: (update: BadgeImportProgress)
   const frames: unknown[] = [];
   const decoder = new TextDecoder();
   let buffer = "";
+  let endFrameCount = 0;
   let settled = false;
   let resolveExport: ((value: ReflexExport) => void) | null = null;
   let rejectExport: ((reason: Error) => void) | null = null;
@@ -210,10 +211,16 @@ export async function readBadgeExport(onProgress?: (update: BadgeImportProgress)
     } else if (payload.type === "session" && frames.length > 2) {
       onProgress?.({ step: 2, message: "Receiving structured history from badge..." });
     } else if (payload.type === "end") {
-      const exportData = exportFromFrames(frames);
-      settled = true;
-      cleanup();
-      resolveExport?.(exportData);
+      endFrameCount++;
+      try {
+        const exportData = exportFromFrames(frames);
+        settled = true;
+        cleanup();
+        resolveExport?.(exportData);
+      } catch (error) {
+        if (endFrameCount >= 3) throw error;
+        onProgress?.({ step: 2, message: `Received partial pass ${endFrameCount}/3. Merging retry frames...` });
+      }
     }
   }
 
