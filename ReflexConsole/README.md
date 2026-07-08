@@ -1,6 +1,6 @@
 # Reflex Console
 
-An ESP32 handheld for quick reaction, attention, choice, rhythm, and memory tests. It tracks your own baseline and shows a simple readiness estimate. It is a measurement tool, not an IQ test or medical device.
+An ESP32 handheld for quick reaction, attention, choice, rhythm, and memory tests. It tracks your own baseline and shows a simple readiness estimate.
 
 ## Requirements
 
