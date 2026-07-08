@@ -76,15 +76,9 @@ Use Settings to change sound, LED, test duration, trial count, lapse threshold, 
 
 ## Dashboard and export
 
-The `dashboard/` directory is a Vercel Next.js app using Clerk and Neon. In Clerk, enable **email** and **Google** sign-in. Copy `dashboard/.env.example` to `.env.local`, set the Clerk and Neon values, run `dashboard/db/schema.sql` against the database, then install and start it. Existing databases created before Memory Test support should also run `dashboard/db/migrations/002_memory_test_type.sql`.
+The `dashboard/` directory is a Vercel Next.js app using Clerk and Neon.
 
-```sh
-cd dashboard
-npm install
-npm run dev
-```
-
-The dashboard is private to the signed-in Clerk user. On desktop Chrome or Edge over HTTPS, choose **Bluetooth import** and connect to the badge over BLE. The badge advertises a Reflex BLE service and only exports after receiving the explicit `REFLEX_EXPORT_V1` command. It sends `REFLEX_EXPORT `-prefixed newline-delimited JSON begin, session, and end frames; normal debug output is ignored by import tools. USB serial import is still available as a fallback for the Python exporter.
+The dashboard is private to the signed-in Clerk user. On desktop Chrome or Edge over HTTPS, choose **Bluetooth import** and connect to the badge over BLE. The badge advertises a Reflex BLE service and only exports after receiving the explicit `REFLEX_EXPORT_V1` command. It sends `REFLEX_EXPORT `-prefixed newline-delimited JSON begin, session, and end frames; normal debug output is ignored by import tools. USB serial import is still available as a fallback for the Python exporter. Be cautious: the BLE chip on the board is weak, so if it fails, try bringing the board closer to your computer.
 
 The dashboard now works as a broader brain-health console:
 
@@ -112,8 +106,6 @@ python3 dashboard/tools/export_badge.py --port /dev/ttyUSB0 --output reflex-expo
 ```
 
 Replace `/dev/ttyUSB0` with the badge's serial port (for example `COM3` on Windows). Imports are idempotent by signed-in user, badge ID, and session number. Deleting cloud history only deletes this account's cloud data; it never changes the badge.
-
-For future model and dataset work, use `docs/ai-research-agent-prompt.md` as the brief for a research agent.
 
 ## Troubleshooting
 
