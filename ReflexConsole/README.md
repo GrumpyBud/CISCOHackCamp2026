@@ -38,7 +38,7 @@ Open `ReflexConsole.ino` in Arduino IDE, select your ESP32 board, and upload.
 | Select / Back / Start / Menu touch | 12 / 14 / 27 / 33 |
 | Optional buzzer | 32 / TP9 |
 
-The tester uses the badge's built-in display, LED, and capacitive pads, so it needs no joystick or extra input wiring. Sound feedback is enabled in `src/config/BuildConfig.h` and expects an optional buzzer on GPIO32/TP9. Disable `ENABLE_BUZZER` if no buzzer is wired. All GPIO is 3.3 V only.
+The tester uses the badge's built-in display, LED, and capacitive pads, so it needs no joystick or extra input wiring. Sound feedback is enabled in `src/config/BuildConfig.h` and expects an optional buzzer on GPIO32/TP9. Disable `ENABLE_BUZZER` if no buzzer is wired, or turn it off in the app settings UI. All GPIO is 3.3 V only.
 
 Touch-pad mapping follows an Xbox-style layout: S2 = Up, S3 = Down, S0 = Left, S4 = Right; S5 = A/Select, S6 = B/Back, S8 = X/Menu, and S7 = Y/Start.
 
