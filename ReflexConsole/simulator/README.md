@@ -1,4 +1,4 @@
-# Reflex Console Simulator
+# Reflex Console Simulator (DEPRECATED)
 
 This is a local Tkinter test harness for the handheld UI. It renders a scaled 128×128 display, uses the same test-state vocabulary, and needs no web server or third-party packages.
 
