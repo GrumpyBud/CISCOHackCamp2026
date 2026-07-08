@@ -21,7 +21,8 @@ type WebBluetoothCharacteristic = {
   properties: { writeWithoutResponse?: boolean };
   startNotifications(): Promise<void>;
   stopNotifications(): Promise<void>;
-  writeValue(value: Uint8Array): Promise<void>;
+  writeValue?(value: Uint8Array): Promise<void>;
+  writeValueWithResponse?(value: Uint8Array): Promise<void>;
   writeValueWithoutResponse?(value: Uint8Array): Promise<void>;
   addEventListener(type: "characteristicvaluechanged", listener: EventListener): void;
   removeEventListener(type: "characteristicvaluechanged", listener: EventListener): void;
@@ -33,6 +34,7 @@ type WebBluetoothService = {
 
 type WebBluetoothServer = {
   getPrimaryService(uuid: string): Promise<WebBluetoothService>;
+  disconnect?(): void;
   addEventListener(type: "gattserverdisconnected", listener: EventListener): void;
   removeEventListener(type: "gattserverdisconnected", listener: EventListener): void;
 };
@@ -111,6 +113,25 @@ function removeBluetoothListener(target: unknown, type: string, listener: EventL
   }
 }
 
+async function writeExportCommand(command: WebBluetoothCharacteristic, payload: Uint8Array) {
+  if (typeof command.writeValue === "function") {
+    await command.writeValue(payload);
+    return;
+  }
+
+  if (typeof command.writeValueWithResponse === "function") {
+    await command.writeValueWithResponse(payload);
+    return;
+  }
+
+  if (command.properties.writeWithoutResponse && typeof command.writeValueWithoutResponse === "function") {
+    await command.writeValueWithoutResponse(payload);
+    return;
+  }
+
+  fail("Bluetooth command characteristic does not support browser write APIs.");
+}
+
 export async function readBadgeExport(onProgress?: (update: BadgeImportProgress) => void): Promise<ReflexExport> {
   if (!isBleSupported()) fail("Bluetooth import requires a secure browser with Web Bluetooth support.");
   const requestDevice = (navigator as WebBluetoothNavigator).bluetooth?.requestDevice;
@@ -158,6 +179,11 @@ export async function readBadgeExport(onProgress?: (update: BadgeImportProgress)
     removeBluetoothListener(data, "characteristicvaluechanged", onValueChanged as EventListener);
     removeBluetoothListener(device, "gattserverdisconnected", onDisconnect);
     void data.stopNotifications().catch(() => {});
+    try {
+      server.disconnect?.();
+    } catch {
+      // The browser may already have torn down the GATT session.
+    }
   };
 
   const abort = (message: string) => {
@@ -171,7 +197,13 @@ export async function readBadgeExport(onProgress?: (update: BadgeImportProgress)
 
   function handleFrame(line: string) {
     if (!line.startsWith(BLE_PREFIX)) return;
-    const payload = JSON.parse(line.slice(BLE_PREFIX.length)) as Record<string, unknown>;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(line.slice(BLE_PREFIX.length)) as Record<string, unknown>;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "bad JSON";
+      throw new Error(`Malformed badge export frame (${detail}). Flash the latest firmware and retry; the previous BLE exporter could fragment JSON during transfer.`);
+    }
     frames.push(payload);
     if (payload.type === "begin") {
       onProgress?.({ step: 1, message: `Badge ${String(payload.badge_id ?? "badge")} connected. Sending REFLEX_EXPORT_V1.` });
@@ -215,11 +247,7 @@ export async function readBadgeExport(onProgress?: (update: BadgeImportProgress)
   onProgress?.({ step: 1, message: "Sending REFLEX_EXPORT_V1 to badge..." });
   const payload = new TextEncoder().encode("REFLEX_EXPORT_V1\n");
   try {
-    if (command.properties.writeWithoutResponse) {
-      await command.writeValueWithoutResponse!(payload);
-    } else {
-      await command.writeValue(payload);
-    }
+    await writeExportCommand(command, payload);
   } catch {
     abort("Export command failed.");
   }

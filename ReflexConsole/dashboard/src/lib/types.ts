@@ -100,10 +100,12 @@ export type HealthLog = {
 };
 
 export type ResearchProfile = {
-  age: string;
+  age_years: number | null;
+  account_age_days: number | null;
   gender: string;
-  dominant_hand: string;
-  extra_context: string;
+  handedness: string;
+  notes: string;
+  updated_at?: string;
 };
 
 export type ResearchPreviewRow = {

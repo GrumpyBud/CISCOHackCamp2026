@@ -148,10 +148,17 @@ export function readinessTimeline(sessions: DashboardSession[]) {
   });
 }
 
-export function trendByType(sessions: DashboardSession[], type: TestType, metric: "score" | "metric" | "lapses" | "false_starts" = "score"): TrendPoint[] {
+export function trendByType(sessions: DashboardSession[], type: TestType, metric: "score" | "metric" | "spread" | "lapses" | "false_starts" = "score"): TrendPoint[] {
   return sessions.filter((session) => session.test_type === type).slice(0, 24).reverse().map((session) => ({
     label: (session.timestamp ?? session.imported_at).slice(5, 10),
     value: metric === "score" ? session.score : metric === "metric" ? metricForSession(session) : session[metric],
+  }));
+}
+
+export function trendBySessionMetric(sessions: DashboardSession[], metric: "spread" | "lapses" | "false_starts"): TrendPoint[] {
+  return sessions.slice(0, 24).reverse().map((session) => ({
+    label: `${(session.timestamp ?? session.imported_at).slice(5, 10)} ${session.test_type}`,
+    value: session[metric],
   }));
 }
 

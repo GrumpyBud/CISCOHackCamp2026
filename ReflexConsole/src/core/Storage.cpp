@@ -2,135 +2,11 @@
 #include "../config/BuildConfig.h"
 
 #include <Arduino.h>
+#include <cstdarg>
 #include <cstring>
 
 namespace {
 constexpr uint8_t HISTORY_SCHEMA_VERSION = 1;
-
-// Keep individual writes below the common default BLE notification payload.
-// Web code buffers these chunks until '\n', so each JSON frame can still be long.
-constexpr size_t EXPORT_WRITE_CHUNK = 16;
-
-void printChunked(Print& out, const char* text) {
-  if (!text) return;
-
-  size_t remaining = strlen(text);
-  const uint8_t* cursor = reinterpret_cast<const uint8_t*>(text);
-
-  while (remaining > 0) {
-    const size_t chunk = remaining > EXPORT_WRITE_CHUNK ? EXPORT_WRITE_CHUNK : remaining;
-    out.write(cursor, chunk);
-    cursor += chunk;
-    remaining -= chunk;
-  }
-}
-
-void printChar(Print& out, char value) {
-  out.write(static_cast<uint8_t>(value));
-}
-
-void printJsonString(Print& out, const char* value) {
-  printChar(out, '"');
-
-  const char* cursor = value ? value : "";
-  while (*cursor) {
-    const unsigned char c = static_cast<unsigned char>(*cursor++);
-
-    switch (c) {
-      case '"':
-        printChunked(out, "\\\"");
-        break;
-      case '\\':
-        printChunked(out, "\\\\");
-        break;
-      case '\b':
-        printChunked(out, "\\b");
-        break;
-      case '\f':
-        printChunked(out, "\\f");
-        break;
-      case '\n':
-        printChunked(out, "\\n");
-        break;
-      case '\r':
-        printChunked(out, "\\r");
-        break;
-      case '\t':
-        printChunked(out, "\\t");
-        break;
-      default:
-        if (c < 0x20) {
-          char escaped[7];
-          snprintf(escaped, sizeof(escaped), "\\u%04X", c);
-          printChunked(out, escaped);
-        } else {
-          out.write(c);
-        }
-        break;
-    }
-  }
-
-  printChar(out, '"');
-}
-
-void printKey(Print& out, const char* key) {
-  printJsonString(out, key);
-  printChar(out, ':');
-}
-
-void printCommaKey(Print& out, const char* key) {
-  printChar(out, ',');
-  printKey(out, key);
-}
-
-void printUnsignedValue(Print& out, unsigned long value) {
-  char buffer[24];
-  snprintf(buffer, sizeof(buffer), "%lu", value);
-  printChunked(out, buffer);
-}
-
-void printSignedValue(Print& out, long value) {
-  char buffer[24];
-  snprintf(buffer, sizeof(buffer), "%ld", value);
-  printChunked(out, buffer);
-}
-
-void printFloatValue(Print& out, float value) {
-  char buffer[24];
-  snprintf(buffer, sizeof(buffer), "%.2f", static_cast<double>(value));
-  printChunked(out, buffer);
-}
-
-void printStringField(Print& out, const char* key, const char* value) {
-  printCommaKey(out, key);
-  printJsonString(out, value);
-}
-
-void printUnsignedField(Print& out, const char* key, unsigned long value) {
-  printCommaKey(out, key);
-  printUnsignedValue(out, value);
-}
-
-void printSignedField(Print& out, const char* key, long value) {
-  printCommaKey(out, key);
-  printSignedValue(out, value);
-}
-
-void printFloatField(Print& out, const char* key, float value) {
-  printCommaKey(out, key);
-  printFloatValue(out, value);
-}
-
-void beginExportFrame(Print& out, const char* type) {
-  printChunked(out, "REFLEX_EXPORT ");
-  printChar(out, '{');
-  printKey(out, "type");
-  printJsonString(out, type);
-}
-
-void endExportFrame(Print& out) {
-  printChunked(out, "}\n");
-}
 
 void readBytesOrZero(Preferences& prefs, const char* key, void* destination, size_t size) {
   if (prefs.getBytesLength(key) == size) {
@@ -150,6 +26,16 @@ bool validLength(uint8_t value) {
 
 bool validLapseMs(uint16_t value) {
   return value >= 250 && value <= 2000;
+}
+
+void writeLine(Print& out, const char* fmt, ...) {
+  char line[320];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+  out.print(line);
+  out.print('\n');
 }
 }  // namespace
 
@@ -321,8 +207,8 @@ void Storage::exportHistory() const {
 }
 
 void Storage::exportHistory(Print& out) const {
-  uint32_t startSequence = 0;
-  uint32_t endSequence = 0;
+  uint32_t start = 0;
+  uint32_t end = 0;
 
   const uint8_t firstIndex =
       historyCount == 0
@@ -330,8 +216,8 @@ void Storage::exportHistory(Print& out) const {
           : (historyHead + SESSION_HISTORY_CAPACITY - historyCount) % SESSION_HISTORY_CAPACITY;
 
   if (historyCount > 0) {
-    startSequence = history[firstIndex].sequence;
-    endSequence = history[(historyHead + SESSION_HISTORY_CAPACITY - 1) % SESSION_HISTORY_CAPACITY].sequence;
+    start = history[firstIndex].sequence;
+    end = history[(historyHead + SESSION_HISTORY_CAPACITY - 1) % SESSION_HISTORY_CAPACITY].sequence;
   }
 
   const uint64_t mac = ESP.getEfuseMac();
@@ -344,38 +230,42 @@ void Storage::exportHistory(Print& out) const {
       static_cast<uint32_t>(mac)
   );
 
-  beginExportFrame(out, "begin");
-  printUnsignedField(out, "protocol", 1);
-  printStringField(out, "firmware_version", FIRMWARE_VERSION);
-  printStringField(out, "badge_id", badgeId);
-  printUnsignedField(out, "history_capacity", SESSION_HISTORY_CAPACITY);
-  printUnsignedField(out, "session_sequence_start", startSequence);
-  printUnsignedField(out, "session_sequence_end", endSequence);
-  printUnsignedField(out, "session_count", historyCount);
-  endExportFrame(out);
+  writeLine(
+      out,
+      "REFLEX_EXPORT {\"type\":\"begin\",\"protocol\":1,\"firmware_version\":\"%s\",\"badge_id\":\"%s\",\"history_capacity\":%u,\"session_sequence_start\":%lu,\"session_sequence_end\":%lu,\"session_count\":%u}",
+      FIRMWARE_VERSION,
+      badgeId,
+      SESSION_HISTORY_CAPACITY,
+      static_cast<unsigned long>(start),
+      static_cast<unsigned long>(end),
+      historyCount
+  );
 
   for (uint8_t i = 0; i < historyCount; i++) {
     const uint8_t index = (firstIndex + i) % SESSION_HISTORY_CAPACITY;
     const SessionHistoryRecord& record = history[index];
 
-    beginExportFrame(out, "session");
-    printUnsignedField(out, "sequence", record.sequence);
-    printStringField(out, "test_type", testKindName(record.testKind));
-    printUnsignedField(out, "score", record.score);
-    printUnsignedField(out, "median", record.median);
-    printFloatField(out, "spread", record.spread);
-    printUnsignedField(out, "lapses", record.lapses);
-    printUnsignedField(out, "false_starts", record.falseStarts);
-    printUnsignedField(out, "attempts", record.attempts);
-    printUnsignedField(out, "correct", record.correct);
-    printSignedField(out, "rhythm_bias", record.bias);
-    endExportFrame(out);
+    writeLine(
+        out,
+        "REFLEX_EXPORT {\"type\":\"session\",\"sequence\":%lu,\"test_type\":\"%s\",\"score\":%u,\"median\":%u,\"spread\":%.2f,\"lapses\":%u,\"false_starts\":%u,\"attempts\":%u,\"correct\":%u,\"rhythm_bias\":%d}",
+        static_cast<unsigned long>(record.sequence),
+        testKindName(record.testKind),
+        record.score,
+        record.median,
+        static_cast<double>(record.spread),
+        record.lapses,
+        record.falseStarts,
+        record.attempts,
+        record.correct,
+        record.bias
+    );
   }
 
-  beginExportFrame(out, "end");
-  printUnsignedField(out, "protocol", 1);
-  printUnsignedField(out, "session_count", historyCount);
-  printUnsignedField(out, "session_sequence_start", startSequence);
-  printUnsignedField(out, "session_sequence_end", endSequence);
-  endExportFrame(out);
+  writeLine(
+      out,
+      "REFLEX_EXPORT {\"type\":\"end\",\"protocol\":1,\"session_count\":%u,\"session_sequence_start\":%lu,\"session_sequence_end\":%lu}",
+      historyCount,
+      static_cast<unsigned long>(start),
+      static_cast<unsigned long>(end)
+  );
 }
