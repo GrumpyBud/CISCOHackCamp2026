@@ -89,7 +89,7 @@ class ReflexBleServerCallbacks final : public BLEServerCallbacks {
 
 void ReflexApp::begin() {
   Serial.begin(115200);
-  DEBUGF("\nReflex Console %s boot %s %s\n", FIRMWARE_VERSION, __DATE__, __TIME__);
+  DEBUGF("\nReflex Console %s release %s %s\n", FIRMWARE_VERSION, FIRMWARE_RELEASE_DATE, FIRMWARE_RELEASE_TIME);
   pinMode(Pins::LED, OUTPUT);
   led(false);
   display.begin();
@@ -532,7 +532,7 @@ void ReflexApp::draw() {
     display.centered("Reflex Console", 32, 2, TFT_CYAN);
     display.centered("Brain health", 62, 1);
     display.centered("trainer", 73, 1);
-    snprintf(b, sizeof(b), "v%s %s", FIRMWARE_VERSION, __DATE__);
+    snprintf(b, sizeof(b), "v%s %s", FIRMWARE_VERSION, FIRMWARE_RELEASE_DATE);
     display.centered(b, 108, 1, TFT_DARKGREY);
     return;
   }
@@ -597,6 +597,7 @@ void ReflexApp::draw() {
     const char* c = state == AppState::CHOICE_INTRO ? "RED = SELECT" : state == AppState::QUICK_INTRO ? "Tap when GREEN." : state == AppState::MEMORY_INTRO ? "Repeat on pads" : "Press START";
     display.centered(a, 42, 1);
     display.centered(c, 60, 1);
+    if (state == AppState::CHOICE_INTRO) display.centered("Accuracy matters most.", 80, 1, TFT_CYAN);
     display.centered("START to begin", 102, 1, TFT_CYAN);
     return;
   }
@@ -616,8 +617,8 @@ void ReflexApp::draw() {
   }
   if (state == AppState::CHOICE_GO) {
     display.clear(stimulusLeft ? TFT_BLUE : TFT_RED);
-    display.centered(stimulusLeft ? "LEFT" : "RIGHT", 45, 2, TFT_WHITE);
-    display.centered(stimulusLeft ? "BACK" : "SELECT", 78, 1, TFT_WHITE);
+    display.centered(stimulusLeft ? "BLUE" : "RED", 45, 3, TFT_WHITE);
+    display.centered(stimulusLeft ? "BACK" : "SELECT", 82, 1, TFT_WHITE);
     return;
   }
   if (state == AppState::RHYTHM_RUNNING) {
@@ -668,20 +669,28 @@ void ReflexApp::draw() {
   }
   if (state == AppState::QUICK_SUMMARY || state == AppState::FOCUS_SUMMARY || state == AppState::CHOICE_SUMMARY || state == AppState::RHYTHM_SUMMARY) {
     display.header("SESSION SUMMARY");
-    snprintf(b, sizeof(b), "Median %u ms", stats.last.median);
-    display.metric(state == AppState::RHYTHM_SUMMARY ? "Timing error" : "Reaction", b + 7, 24, TFT_CYAN);
+    if (state == AppState::CHOICE_SUMMARY) {
+      const uint8_t accuracy = stats.last.attempts ? (uint8_t)(100.f * stats.last.correct / stats.last.attempts + 0.5f) : 0;
+      snprintf(b, sizeof(b), "%u%%", accuracy);
+      display.metric("Accuracy", b, 24, TFT_CYAN);
+      snprintf(b, sizeof(b), "%u ms", stats.last.median);
+      display.metric("Reaction", b, 40);
+    } else {
+      snprintf(b, sizeof(b), "Median %u ms", stats.last.median);
+      display.metric(state == AppState::RHYTHM_SUMMARY ? "Timing error" : "Reaction", b + 7, 24, TFT_CYAN);
+    }
     snprintf(b, sizeof(b), "%.0f ms", stats.last.spread);
-    display.metric("Consistency", b, 40);
+    display.metric("Consistency", b, state == AppState::CHOICE_SUMMARY ? 56 : 40);
     snprintf(b, sizeof(b), "%u", stats.last.lapses);
-    display.metric("Lapses", b, 56, TFT_YELLOW);
+    display.metric("Lapses", b, state == AppState::CHOICE_SUMMARY ? 72 : 56, TFT_YELLOW);
     snprintf(b, sizeof(b), "%u", stats.last.falseStarts);
-    display.metric("False starts", b, 72, TFT_RED);
+    display.metric("False starts", b, state == AppState::CHOICE_SUMMARY ? 88 : 72, TFT_RED);
     if (stats.baseline.quickSamples < 5) {
       snprintf(b, sizeof(b), "Baseline: %u/5", stats.baseline.quickSamples);
-      display.centered(b, 94, 1, TFT_YELLOW);
+      display.centered(b, state == AppState::CHOICE_SUMMARY ? 102 : 94, 1, TFT_YELLOW);
     } else {
       snprintf(b, sizeof(b), state == AppState::CHOICE_SUMMARY || state == AppState::RHYTHM_SUMMARY ? "Score %u" : "Readiness %u", stats.last.score);
-      display.centered(b, 94, 1, TFT_GREEN);
+      display.centered(b, state == AppState::CHOICE_SUMMARY ? 102 : 94, 1, TFT_GREEN);
     }
     display.centered("BACK: menu", 113, 1, TFT_DARKGREY);
   }

@@ -1,7 +1,10 @@
 #pragma once
 
 // User-visible version shown on the boot screen. Bump it for each release.
-#define FIRMWARE_VERSION "1.5.4"
+#define FIRMWARE_VERSION "1.5.5"
+// Release date shown on the boot screen and in debug logs.
+#define FIRMWARE_RELEASE_DATE "2026-07-08"
+#define FIRMWARE_RELEASE_TIME "14:19"
 #define DEBUG_SERIAL 1
 #define ENABLE_BUZZER 1
 #define ENABLE_WIFI_DASHBOARD 0
