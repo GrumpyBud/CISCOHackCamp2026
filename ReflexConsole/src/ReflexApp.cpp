@@ -597,7 +597,6 @@ void ReflexApp::draw() {
     const char* c = state == AppState::CHOICE_INTRO ? "RED = SELECT" : state == AppState::QUICK_INTRO ? "Tap when GREEN." : state == AppState::MEMORY_INTRO ? "Repeat on pads" : "Press START";
     display.centered(a, 42, 1);
     display.centered(c, 60, 1);
-    if (state == AppState::CHOICE_INTRO) display.centered("Accuracy matters most.", 80, 1, TFT_CYAN);
     display.centered("START to begin", 102, 1, TFT_CYAN);
     return;
   }
